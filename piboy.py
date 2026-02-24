@@ -309,17 +309,19 @@ class AppModule(Module):
                     display.reset()
                 display.show(state.clear_buffer(), 0, 0)
 
-            return GPIOInput(e.keypad_config.left_pin, e.keypad_config.right_pin,
-                             e.keypad_config.up_pin, e.keypad_config.down_pin,
-                             e.keypad_config.a_pin, e.keypad_config.b_pin,
-                             e.rotary_config.rotary_device, e.rotary_config.sw_pin,
-                             lambda: state.on_key_left(display), lambda: state.on_key_right(display),
-                             lambda: state.on_key_up(display), lambda: state.on_key_down(display),
-                             lambda: state.on_key_a(display), lambda: state.on_key_b(display),
-                             # Remap encoder rotation to app-internal navigation (down/up)
-                             lambda: state.on_key_down(display), lambda: state.on_key_up(display),
-                             # Encoder push acts like A/select
-                             lambda: state.on_key_a(display))
+            return GPIOInput(
+                e.keypad_config.left_pin, e.keypad_config.right_pin,
+                e.keypad_config.up_pin, e.keypad_config.down_pin,
+                e.keypad_config.a_pin, e.keypad_config.b_pin,
+                e.rotary_config.rotary_device, e.rotary_config.sw_pin,
+                lambda: state.on_key_left(display), lambda: state.on_key_right(display),
+                lambda: state.on_key_up(display), lambda: state.on_key_down(display),
+                lambda: state.on_key_a(display), lambda: state.on_key_b(display),
+                # Remap encoder rotation to app-internal navigation (down/up)
+                lambda: state.on_key_down(display), lambda: state.on_key_up(display),
+                # Encoder push acts like A/select
+                lambda: state.on_key_a(display)
+            )
         else:
             if self.__unified_instance is None:
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
@@ -438,8 +440,8 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
               state.environment.app_config.accent, font=font)
     cursor_x += text_width
 
-    # draw time
-    date_str = datetime.now().strftime('%d-%m-%Y %H:%M:%S')
+    # draw time (MM-DD-YYYY + 12-hour AM/PM)
+    date_str = datetime.now().strftime('%m-%d-%Y %I:%M:%S %p')
     _, _, text_width, text_height = font.getbbox(date_str)
     text_padding = (footer_height - text_height) // 2
     draw.text((width - footer_side_offset - text_padding - text_width, cursor_y + text_padding), date_str,
