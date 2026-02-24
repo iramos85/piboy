@@ -1,4 +1,5 @@
 import logging
+import threading
 import time
 from datetime import datetime
 from logging.config import fileConfig
@@ -31,6 +32,7 @@ from interaction.UnifiedInteraction import UnifiedInteraction
 
 fileConfig(fname='config.ini')
 logger = logging.getLogger(__name__)
+
 
 class AppState:
 
@@ -112,6 +114,18 @@ class AppState:
         if self.__active_app < 0:
             self.__active_app = len(self.__apps) - 1
 
+    def set_active_app_index(self, index: int, display: Display):
+        """Directly select an app by index (used by the rotary selector switch)."""
+        if index < 0 or index >= len(self.__apps):
+            return
+        if index == self.__active_app:
+            return
+
+        self.active_app.on_app_leave()
+        self.__active_app = index
+        self.active_app.on_app_enter()
+        self.update_display(display, partial=False)
+
     def watch_function(self, display: Display):
         while True:
             now = datetime.now()
@@ -165,6 +179,7 @@ class AppState:
         self.active_app.on_key_b()
         self.update_display(display, partial=True)
 
+    # Kept for compatibility if anything still calls these
     def on_rotary_increase(self, display: Display):
         self.active_app.on_app_leave()
         self.next_app()
@@ -301,19 +316,88 @@ class AppModule(Module):
                              lambda: state.on_key_left(display), lambda: state.on_key_right(display),
                              lambda: state.on_key_up(display), lambda: state.on_key_down(display),
                              lambda: state.on_key_a(display), lambda: state.on_key_b(display),
-                             lambda: state.on_rotary_increase(display), lambda: state.on_rotary_decrease(display),
-                             reset_and_init)
+                             # Remap encoder rotation to app-internal navigation (down/up)
+                             lambda: state.on_key_down(display), lambda: state.on_key_up(display),
+                             # Encoder push acts like A/select
+                             lambda: state.on_key_a(display))
         else:
             if self.__unified_instance is None:
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
             return self.__unified_instance
 
 
+def start_mode_selector_thread(app_state: AppState, display: Display):
+    """
+    Poll a multi-position selector wired as:
+      - common -> GND
+      - each selected throw -> one GPIO pin (input pull-up)
+    Active position reads LOW.
+
+    Pin mapping (BCM) to app index:
+      GPIO5  -> app 0 (FileManager)
+      GPIO6  -> app 2 (Environment)
+      GPIO12 -> app 3 (Radio)
+      GPIO13 -> app 6 (Map)
+      GPIO19 -> app 5 (Clock)
+    """
+    try:
+        import RPi.GPIO as GPIO
+    except Exception as ex:
+        logger.warning("Mode selector thread not started (RPi.GPIO unavailable): %s", ex)
+        return
+
+    mode_pins = {
+        5: 0,    # FileManagerApp
+        6: 2,    # EnvironmentApp
+        12: 3,   # RadioApp
+        13: 6,   # MapApp
+        19: 5,   # ClockApp
+    }
+
+    # Configure selector pins as pull-ups
+    for pin in mode_pins:
+        GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    def read_active_index():
+        low_pins = [pin for pin in mode_pins if GPIO.input(pin) == GPIO.LOW]
+        if len(low_pins) == 1:
+            return mode_pins[low_pins[0]]
+        return None
+
+    def worker():
+        last_index = None
+        candidate = None
+        stable_count = 0
+
+        while True:
+            idx = read_active_index()
+
+            # Simple debounce / stability filter
+            if idx == candidate:
+                stable_count += 1
+            else:
+                candidate = idx
+                stable_count = 1
+
+            if stable_count >= 3 and idx is not None and idx != last_index:
+                try:
+                    app_state.set_active_app_index(idx, display)
+                    last_index = idx
+                except Exception:
+                    logger.exception("Failed to set app index from mode selector")
+
+            time.sleep(0.02)
+
+    t = threading.Thread(target=worker, daemon=True)
+    t.start()
+    logger.info("Started mode selector thread")
+
+
 def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, int]:
     width, height = state.environment.app_config.resolution
     footer_height = 20  # height of the footer
     footer_bottom_offset = 3  # spacing to the bottom
-    icon_padding = 3 # padding between status icons
+    icon_padding = 3  # padding between status icons
     footer_side_offset = state.environment.app_config.app_side_offset  # spacing to the sides
     font = state.environment.app_config.font_header
     draw = ImageDraw.Draw(image)
@@ -439,6 +523,10 @@ if __name__ == '__main__':
         from core.udev_service import UDevService
         udev_service = UDevService()
         udev_service.start()
+
+    # Start selector polling thread (5-position rotary switch -> direct app select)
+    if injector.get(Environment).is_raspberry_pi:
+        start_mode_selector_thread(app_state, DISPLAY)
 
     # initially draw the empty buffer to initialize all pixels on the hardware module
     DISPLAY.show(app_state.image_buffer, 0, 0)
