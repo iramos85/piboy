@@ -33,6 +33,9 @@ class EnvironmentApp(SelfUpdatingApp):
         self.__p_icon = resources.pressure_icon
         self.__h_icon = resources.humidity_icon
 
+    def __c_to_f(self, c: float) -> float:
+        return (c * 9.0 / 5.0) + 32.0
+
     @property
     @override
     def refresh_time(self) -> float:
@@ -66,16 +69,17 @@ class EnvironmentApp(SelfUpdatingApp):
 
         draw_area_left_top = (left_top[0],
                               min(temperature_xy[1] + self.__t_icon.height,
-                              pressure_xy[1] + self.__p_icon.height,
-                              humidity_xy[1] + self.__h_icon.height))
+                                  pressure_xy[1] + self.__p_icon.height,
+                                  humidity_xy[1] + self.__h_icon.height))
 
-        # format with two decimals, and seven characters in total (adds whitespaces on the left to fill)
-        t_text = f'{self.__data.temperature:.2f} °C' if self.__data is not None else '? °C'
+        # format values (temperature shown in Fahrenheit)
+        t_text = f'{self.__c_to_f(self.__data.temperature):.2f} °F' if self.__data is not None else '? °F'
         p_text = f'{self.__data.pressure:.2f} hPa' if self.__data is not None else '? hPa'
         h_text = f'{self.__data.humidity:.2%}' if self.__data is not None else '?%'
         _, _, t_text_width, t_text_height = self.__font.getbbox(t_text)
         _, _, p_text_width, p_text_height = self.__font.getbbox(p_text)
         _, _, h_text_width, h_text_height = self.__font.getbbox(h_text)
+
         draw.text((temperature_xy[0] + (self.__t_icon.width - t_text_width) // 2,
                    temperature_xy[1] + self.__t_icon.height + icon_gap),
                   t_text, self.__color, font=self.__font)
@@ -89,6 +93,6 @@ class EnvironmentApp(SelfUpdatingApp):
         if partial:
             right_bottom = (humidity_xy[0] + (self.__h_icon.width - h_text_width) // 2 + h_text_width,
                             draw_area_left_top[1] + icon_gap + max(t_text_height, p_text_height, h_text_height))
-            yield image.crop(draw_area_left_top + right_bottom), *draw_area_left_top  # noqa (unpacking type check fail)
+            yield image.crop(draw_area_left_top + right_bottom), *draw_area_left_top  # noqa
         else:
             yield image, 0, 0
