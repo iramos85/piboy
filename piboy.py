@@ -348,16 +348,16 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         logger.warning("Mode selector thread not started (RPi.GPIO unavailable): %s", ex)
         return
 
-    mode_pins = {
-        5: 0,    # FileManagerApp
-        6: 2,    # EnvironmentApp
-        12: 3,   # RadioApp
-        13: 6,   # MapApp
-        19: 5,   # ClockApp
-    }
+mode_pins = {
+    5: 0,   # Position 1 -> INV (FileManagerApp)
+    6: 1,   # Position 2 -> SYS (UpdateApp)
+    12: 2,  # Position 3 -> ENV (EnvironmentApp)
+    13: 3,  # Position 4 -> RAD (RadioApp)
+    19: 6,  # Position 5 -> MAP (MapApp)
+}
 
     # Configure selector pins as pull-ups
-    for pin in mode_pins:
+for pin in mode_pins:
         GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
     def read_active_index():
