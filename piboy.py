@@ -55,8 +55,8 @@ ENC_B_PIN = 27
 ENC_SW_PIN = 22
 
 # Encoder behavior tuning
-ENC_POLL_S = 0.005             # was 0.002 — slower poll reduces bounce/multi-step
-ENC_STEP_RATE_LIMIT_S = 0.080  # was 0.030 — accept at most one step every 80ms
+ENC_POLL_S = 0.005             # slower poll reduces bounce/multi-step
+ENC_STEP_RATE_LIMIT_S = 0.100  # accept at most one step every 100ms
 BTN_DEBOUNCE_S = 0.060
 BTN_LONGPRESS_S = 0.70
 
@@ -500,10 +500,17 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
                 if direction != 0 and (now - last_step_t) >= ENC_STEP_RATE_LIMIT_S:
                     last_step_t = now
                     try:
-                        if direction > 0:
-                            app_state.on_key_down(display)
+                        # RADIO uses left/right selection; other apps use up/down
+                        if isinstance(app_state.active_app, RadioApp):
+                            if direction > 0:
+                                app_state.on_key_right(display)
+                            else:
+                                app_state.on_key_left(display)
                         else:
-                            app_state.on_key_up(display)
+                            if direction > 0:
+                                app_state.on_key_down(display)
+                            else:
+                                app_state.on_key_up(display)
                     except Exception:
                         logger.exception("Rotary turn handler failed")
 
@@ -675,6 +682,7 @@ if __name__ == "__main__":
         udev_service = UDevService()
         udev_service.start()
 
+        # Start inputs
         start_rotary_encoder_thread(app_state, DISPLAY)
         start_mode_selector_thread(app_state, DISPLAY)
 
