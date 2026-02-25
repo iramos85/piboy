@@ -382,7 +382,11 @@ class AppModule(Module):
         if e.is_raspberry_pi:
             # We don't use GPIOInput anymore, but Injector still requires an Input instance.
             # Provide the required callbacks; hardware events come from the rotary polling thread.
-            return Input(
+            class RotaryOnlyInput(Input):
+                def close(self) -> None:
+                    return
+
+            return RotaryOnlyInput(
                 lambda: state.on_key_left(display),
                 lambda: state.on_key_right(display),
                 lambda: state.on_key_up(display),
