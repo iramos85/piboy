@@ -55,7 +55,7 @@ ENC_B_PIN = 27
 ENC_SW_PIN = 22
 
 # Encoder behavior tuning
-ENC_POLL_S = 0.002          # 2ms polling; stable and responsive
+ENC_POLL_S = 0.002             # 2ms polling; stable and responsive
 ENC_STEP_RATE_LIMIT_S = 0.030  # suppress bounce bursts
 BTN_DEBOUNCE_S = 0.060
 BTN_LONGPRESS_S = 0.70
@@ -309,11 +309,9 @@ class AppModule(Module):
     def provide_environment_data_service(self, e: Environment) -> EnvironmentDataProvider:
         if e.is_raspberry_pi:
             from data.BME280EnvironmentDataProvider import BME280EnvironmentDataProvider
-
             return BME280EnvironmentDataProvider(e.env_sensor_config.port, e.env_sensor_config.address)
         else:
             from data.FakeEnvironmentDataProvider import FakeEnvironmentDataProvider
-
             return FakeEnvironmentDataProvider()
 
     @singleton
@@ -321,11 +319,9 @@ class AppModule(Module):
     def provide_location_service(self, e: Environment) -> LocationProvider:
         if e.is_raspberry_pi:
             from data.SerialGPSLocationProvider import SerialGPSLocationProvider
-
             return SerialGPSLocationProvider(e.gps_module_config.port, baud_rate=e.gps_module_config.baud_rate)
         else:
             from data.IPLocationProvider import IPLocationProvider
-
             return IPLocationProvider(apply_inaccuracy=True)
 
     @singleton
@@ -338,11 +334,9 @@ class AppModule(Module):
     def provide_network_status_service(self, e: Environment) -> NetworkStatusProvider:
         if e.is_raspberry_pi:
             from data.NetworkManagerStatusProvider import NetworkManagerStatusProvider
-
             return NetworkManagerStatusProvider()
         else:
             from data.FakeNetworkStatusProvider import FakeNetworkStatusProvider
-
             return FakeNetworkStatusProvider()
 
     @singleton
@@ -350,11 +344,9 @@ class AppModule(Module):
     def provide_battery_status_service(self, e: Environment) -> BatteryStatusProvider:
         if e.is_raspberry_pi:
             from data.ADS1115BatteryStatusProvider import ADS1115BatteryStatusProvider
-
             return ADS1115BatteryStatusProvider(e.adc_config.port, e.adc_config.address)
         else:
             from data.FakeBatteryStatusProvider import FakeBatteryStatusProvider
-
             return FakeBatteryStatusProvider()
 
     @singleton
@@ -388,11 +380,19 @@ class AppModule(Module):
         All navigation is driven by the rotary encoder thread.
         """
         if e.is_raspberry_pi:
-            class _DummyInput(Input):
-                def close(self):
-                    return
-
-            return _DummyInput()
+            # We don't use GPIOInput anymore, but Injector still requires an Input instance.
+            # Provide the required callbacks; hardware events come from the rotary polling thread.
+            return Input(
+                lambda: state.on_key_left(display),
+                lambda: state.on_key_right(display),
+                lambda: state.on_key_up(display),
+                lambda: state.on_key_down(display),
+                lambda: state.on_key_a(display),
+                lambda: state.on_key_b(display),
+                lambda: state.on_rotary_increase(display),
+                lambda: state.on_rotary_decrease(display),
+                lambda: None,  # on_rotary_switch (unused)
+            )
         else:
             if self.__unified_instance is None:
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
@@ -495,7 +495,6 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
 
     # Button state
     btn_last = GPIO.input(ENC_SW_PIN)
-    btn_last_change_t = time.monotonic()
     btn_press_t = None  # type: float | None
     long_fired = False
 
@@ -513,7 +512,7 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
     }
 
     def worker():
-        nonlocal last_state, last_step_t, btn_last, btn_last_change_t, btn_press_t, long_fired
+        nonlocal last_state, last_step_t, btn_last, btn_press_t, long_fired
 
         while True:
             # --- encoder ---
@@ -544,7 +543,6 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
 
             if btn != btn_last:
                 btn_last = btn
-                btn_last_change_t = now
 
                 # pressed (pulled up -> LOW)
                 if btn == 0:
@@ -615,13 +613,23 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     state_of_charge_str = f"{state.battery_status_provider.get_state_of_charge():.0%}"
     _, _, text_width, text_height = font.getbbox(state_of_charge_str)
     text_padding = (footer_height - text_height) // 2
-    draw.text((cursor_x + icon_padding, cursor_y + text_padding), state_of_charge_str, state.environment.app_config.accent, font=font)
+    draw.text(
+        (cursor_x + icon_padding, cursor_y + text_padding),
+        state_of_charge_str,
+        state.environment.app_config.accent,
+        font=font,
+    )
     cursor_x += text_width
 
     date_str = datetime.now(LOCAL_TZ).strftime("%m-%d-%Y %I:%M:%S %p")
     _, _, text_width, text_height = font.getbbox(date_str)
     text_padding = (footer_height - text_height) // 2
-    draw.text((width - footer_side_offset - text_padding - text_width, cursor_y + text_padding), date_str, state.environment.app_config.accent, font=font)
+    draw.text(
+        (width - footer_side_offset - text_padding - text_width, cursor_y + text_padding),
+        date_str,
+        state.environment.app_config.accent,
+        font=font,
+    )
 
     x0, y0 = start
     end = end[0] + 1, end[1] + 1
