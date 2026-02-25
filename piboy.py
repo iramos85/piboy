@@ -55,8 +55,8 @@ ENC_B_PIN = 27
 ENC_SW_PIN = 22
 
 # Encoder behavior tuning
-ENC_POLL_S = 0.002             # 2ms polling; stable and responsive
-ENC_STEP_RATE_LIMIT_S = 0.030  # suppress bounce bursts
+ENC_POLL_S = 0.005             # was 0.002 — slower poll reduces bounce/multi-step
+ENC_STEP_RATE_LIMIT_S = 0.080  # was 0.030 — accept at most one step every 80ms
 BTN_DEBOUNCE_S = 0.060
 BTN_LONGPRESS_S = 0.70
 
@@ -210,7 +210,6 @@ class AppState:
                 image.paste(patch, (x0 + x_offset, y0 + y_offset))
             display.show(image.crop(app_bbox), x_offset, y_offset)
 
-    # “Button” handlers (still used by rotary mapping)
     def on_key_left(self, display: Display):
         self.active_app.on_key_left()
         self.update_display(display, partial=True)
@@ -235,7 +234,6 @@ class AppState:
         self.active_app.on_key_b()
         self.update_display(display, partial=True)
 
-    # Kept for compatibility if anything still calls these
     def on_rotary_increase(self, display: Display):
         self.active_app.on_app_leave()
         self.next_app()
@@ -380,8 +378,6 @@ class AppModule(Module):
         All navigation is driven by the rotary encoder thread.
         """
         if e.is_raspberry_pi:
-            # We don't use GPIOInput anymore, but Injector still requires an Input instance.
-            # Provide the required callbacks; hardware events come from the rotary polling thread.
             class RotaryOnlyInput(Input):
                 def close(self) -> None:
                     return
@@ -395,7 +391,7 @@ class AppModule(Module):
                 lambda: state.on_key_b(display),
                 lambda: state.on_rotary_increase(display),
                 lambda: state.on_rotary_decrease(display),
-                lambda: None,  # on_rotary_switch (unused)
+                lambda: None,
             )
         else:
             if self.__unified_instance is None:
@@ -404,19 +400,6 @@ class AppModule(Module):
 
 
 def start_mode_selector_thread(app_state: AppState, display: Display):
-    """
-    Poll a multi-position selector wired as:
-      - common -> GND
-      - each selected throw -> one GPIO pin (input pull-up)
-    Active position reads LOW.
-
-    Pin mapping (BCM) to app index:
-      Position 1 -> INV (0)
-      Position 2 -> SYS (1)
-      Position 3 -> ENV (2)
-      Position 4 -> RAD (3)
-      Position 5 -> MAP (6)
-    """
     try:
         import RPi.GPIO as GPIO
     except Exception as ex:
@@ -471,16 +454,6 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
 
 
 def start_rotary_encoder_thread(app_state: AppState, display: Display):
-    """
-    Polling rotary encoder driver (no GPIO edge interrupts).
-    This avoids 'Failed to add edge detection' entirely.
-
-    Mappings:
-      CW  -> on_key_down
-      CCW -> on_key_up
-      short press -> on_key_a
-      long press  -> on_key_b
-    """
     try:
         import RPi.GPIO as GPIO
     except Exception as ex:
@@ -493,17 +466,13 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
     for pin in (ENC_A_PIN, ENC_B_PIN, ENC_SW_PIN):
         GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
-    # Quadrature decode via state transitions
     last_state = (GPIO.input(ENC_A_PIN) << 1) | GPIO.input(ENC_B_PIN)
     last_step_t = 0.0
 
-    # Button state
     btn_last = GPIO.input(ENC_SW_PIN)
     btn_press_t = None  # type: float | None
     long_fired = False
 
-    # Transition table: maps (prev<<2 | curr) to direction
-    # +1 = CW, -1 = CCW, 0 = invalid/no move
     trans = {
         0b0001: +1,
         0b0010: -1,
@@ -519,7 +488,6 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
         nonlocal last_state, last_step_t, btn_last, btn_press_t, long_fired
 
         while True:
-            # --- encoder ---
             a = GPIO.input(ENC_A_PIN)
             b = GPIO.input(ENC_B_PIN)
             state = (a << 1) | b
@@ -541,30 +509,24 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
 
                 last_state = state
 
-            # --- button ---
             btn = GPIO.input(ENC_SW_PIN)
             now = time.monotonic()
 
             if btn != btn_last:
                 btn_last = btn
-
-                # pressed (pulled up -> LOW)
                 if btn == 0:
                     btn_press_t = now
                     long_fired = False
                 else:
-                    # released
                     if btn_press_t is not None:
                         held = now - btn_press_t
                         btn_press_t = None
                         if held >= BTN_DEBOUNCE_S and not long_fired:
-                            # short press
                             try:
                                 app_state.on_key_a(display)
                             except Exception:
                                 logger.exception("Rotary short-press handler failed")
 
-            # long press detection while held
             if btn_last == 0 and btn_press_t is not None and not long_fired:
                 if (now - btn_press_t) >= BTN_LONGPRESS_S:
                     long_fired = True
@@ -713,7 +675,6 @@ if __name__ == "__main__":
         udev_service = UDevService()
         udev_service.start()
 
-        # Start inputs
         start_rotary_encoder_thread(app_state, DISPLAY)
         start_mode_selector_thread(app_state, DISPLAY)
 
