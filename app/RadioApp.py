@@ -351,7 +351,7 @@ class RadioApp(SelfUpdatingApp):
             return False
 
         if self.__selected_index != self.__playlist[self.__playing_index]:
-            self.__playing_index = self.__playlist.index(self.__selected_index])
+            self.__playing_index = self.__playlist.index(self.__selected_index)
             if self.__player.has_stream:
                 self.__player.stop_stream()
 
