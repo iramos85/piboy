@@ -349,12 +349,12 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         return
 
     mode_pins = {
-        5: 0,   # Position 1 -> INV (FileManagerApp)
-        6: 1,   # Position 2 -> SYS (UpdateApp)
-        12: 2,  # Position 3 -> ENV (EnvironmentApp)
-        13: 3,  # Position 4 -> RAD (RadioApp)
-        19: 6,  # Position 5 -> MAP (MapApp)
-    }
+    5: 0,
+    6: 1,
+    12: 2,
+    13: 3,
+    20: 6,
+}
 
     # Configure selector pins as pull-ups
     for pin in mode_pins:
