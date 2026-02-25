@@ -3,12 +3,10 @@ import random
 import re
 import threading
 import time
-import wave
 from abc import ABC, abstractmethod
-from subprocess import PIPE, run
+from subprocess import PIPE, Popen, DEVNULL, run
 from typing import Any, Callable, Generator, Optional
 
-import pyaudio
 from injector import inject
 from PIL import Image, ImageDraw
 
@@ -33,8 +31,8 @@ class RadioApp(SelfUpdatingApp):
             self.__controls.append(control)
 
         def clear_selection(self, control: Optional['RadioApp.Control']):
-            for control in [c for c in self.__controls if c is not control]:
-                control.reset()
+            for c in [c for c in self.__controls if c is not control]:
+                c.reset()
 
     class Control(ABC):
         class SelectionState:
@@ -159,92 +157,131 @@ class RadioApp(SelfUpdatingApp):
             self._on_select()
 
     class AudioPlayer:
-        def __init__(self, callback_next: Callable[[], None]):
-            self.__player = pyaudio.PyAudio()
-            self.__total_frames = 0
-            self.__played_frames = 0
-            self.__wave_read: Optional[wave.Wave_read] = None
-            self.__stream: Optional[pyaudio.Stream] = None
-            self.__callback_next = callback_next
-            self.__is_continuing = False
-            self.__output_device_index = self.__find_output_device_index("MAX98357A")
+        """
+        ALSA/aplay-backed player for Raspberry Pi.
+        Avoids PyAudio callback underrun noise on MAX98357A.
+        """
 
-        def __find_output_device_index(self, preferred_name: str) -> Optional[int]:
-            preferred_name = preferred_name.lower()
+        def __init__(self, callback_next: Callable[[], None]):
+            self.__callback_next = callback_next
+            self.__process: Optional[Popen] = None
+            self.__watch_thread: Optional[threading.Thread] = None
+            self.__is_continuing = False
+            self.__current_file: Optional[str] = None
+            self.__started_at: Optional[float] = None
+            self.__duration_s: Optional[float] = None
+            self.__stop_requested = False
+
+        @staticmethod
+        def __wav_duration_seconds(file_path: str) -> Optional[float]:
+            # Minimal WAV duration parser using stdlib only
+            import wave
             try:
-                for i in range(self.__player.get_device_count()):
-                    info = self.__player.get_device_info_by_index(i)
-                    name = str(info.get('name', '')).lower()
-                    max_out = int(info.get('maxOutputChannels', 0))
-                    if max_out > 0 and preferred_name in name:
-                        return i
+                with wave.open(file_path, 'rb') as wf:
+                    frames = wf.getnframes()
+                    rate = wf.getframerate()
+                    if rate > 0:
+                        return frames / float(rate)
             except Exception:
-                pass
+                return None
             return None
 
-        def __stream_callback(self, _1, frame_count, _2, _3) -> tuple[bytes, int]:
-            data = self.__wave_read.readframes(frame_count)
-            self.__played_frames += frame_count
-            if self.__played_frames >= self.__total_frames:
-                thread_call_next = threading.Thread(target=self.__delayed_call_next, args=(), daemon=True)
-                thread_call_next.start()
-                return bytes(), pyaudio.paComplete
-            else:
-                return data, pyaudio.paContinue
+        def __start_watch_thread(self):
+            def worker():
+                proc = self.__process
+                if proc is None:
+                    return
 
-        def __delayed_call_next(self, delay: int = 1):
+                rc = proc.wait()
+                if self.__process is not proc:
+                    return  # stream replaced
+                self.__process = None
+
+                # Only advance playlist if playback ended naturally
+                if not self.__stop_requested and rc == 0 and self.__is_continuing:
+                    t = threading.Thread(target=self.__delayed_call_next, daemon=True)
+                    t.start()
+
+            self.__watch_thread = threading.Thread(target=worker, daemon=True)
+            self.__watch_thread.start()
+
+        def __delayed_call_next(self, delay: float = 0.2):
             time.sleep(delay)
             self.__callback_next()
 
         def load_file(self, file_path: str):
-            self.__wave_read = wave.open(file_path, 'rb')
-            self.__total_frames = self.__wave_read.getnframes()
-            self.__played_frames = 0
-
-            open_kwargs = dict(
-                format=self.__player.get_format_from_width(self.__wave_read.getsampwidth()),
-                channels=self.__wave_read.getnchannels(),
-                rate=self.__wave_read.getframerate(),
-                output=True,
-                stream_callback=self.__stream_callback
-            )
-            if self.__output_device_index is not None:
-                open_kwargs["output_device_index"] = self.__output_device_index
-
-            self.__stream = self.__player.open(**open_kwargs)
+            self.__current_file = file_path
+            self.__duration_s = self.__wav_duration_seconds(file_path)
+            self.__started_at = None
 
         def start_stream(self) -> bool:
-            if self.__stream:
-                self.__stream.start_stream()
+            if self.__current_file is None:
+                return False
+
+            # If already active, don't restart
+            if self.is_active:
                 self.__is_continuing = True
                 return True
+
+            self.__stop_requested = False
+
+            # Prefer MAX98357A explicitly, fall back to default
+            cmds = [
+                ['aplay', '-q', '-D', 'plughw:CARD=MAX98357A,DEV=0', self.__current_file],
+                ['aplay', '-q', self.__current_file]
+            ]
+
+            for cmd in cmds:
+                try:
+                    self.__process = Popen(cmd, stdout=DEVNULL, stderr=DEVNULL)
+                    self.__started_at = time.time()
+                    self.__is_continuing = True
+                    self.__start_watch_thread()
+                    return True
+                except Exception:
+                    self.__process = None
+                    continue
+
             return False
 
         def pause_stream(self) -> bool:
-            if self.__stream:
-                self.__stream.stop_stream()
+            # aplay doesn't support pause; emulate with stop
+            if self.__process:
+                self.__stop_requested = True
+                try:
+                    self.__process.terminate()
+                except Exception:
+                    pass
                 self.__is_continuing = False
                 return True
             return False
 
         def stop_stream(self) -> bool:
-            if self.__stream:
-                self.__stream.stop_stream()
-                self.__stream.close()
-                self.__stream = None
+            if self.__process:
+                self.__stop_requested = True
+                try:
+                    self.__process.terminate()
+                    self.__process.wait(timeout=1.0)
+                except Exception:
+                    try:
+                        self.__process.kill()
+                    except Exception:
+                        pass
+                self.__process = None
                 self.__is_continuing = False
-                self.__total_frames = 0
-                self.__played_frames = 0
+                self.__started_at = None
                 return True
+            self.__is_continuing = False
+            self.__started_at = None
             return False
 
         @property
         def has_stream(self) -> bool:
-            return self.__stream is not None
+            return self.__current_file is not None
 
         @property
         def is_active(self) -> bool:
-            return self.__stream is not None and self.__stream.is_active()
+            return self.__process is not None and self.__process.poll() is None
 
         @property
         def is_continuing(self) -> bool:
@@ -252,11 +289,12 @@ class RadioApp(SelfUpdatingApp):
 
         @property
         def progress(self) -> Optional[float]:
-            if self.__total_frames == 0:
+            if self.__duration_s is None or self.__duration_s <= 0 or self.__started_at is None:
                 return None
-            if self.__total_frames <= self.__played_frames:
-                return 1
-            return self.__played_frames / self.__total_frames
+            if not self.is_active:
+                return 1.0 if self.__current_file is not None else None
+            elapsed = max(0.0, time.time() - self.__started_at)
+            return min(1.0, elapsed / self.__duration_s)
 
     __playback_control_group = ControlGroup()
 
@@ -289,8 +327,12 @@ class RadioApp(SelfUpdatingApp):
 
         self.__player = self.AudioPlayer(self.__call_next)
 
-        self.Control.SelectionState.NONE = self.Control.SelectionState(self.__color_dark, self.__background, False, False)
-        self.Control.SelectionState.FOCUSED = self.Control.SelectionState(self.__color, self.__background, True, False)
+        self.Control.SelectionState.NONE = self.Control.SelectionState(
+            self.__color_dark, self.__background, False, False
+        )
+        self.Control.SelectionState.FOCUSED = self.Control.SelectionState(
+            self.__color, self.__background, True, False
+        )
 
         control_group = self.ControlGroup()
         self.__controls = [
@@ -307,15 +349,16 @@ class RadioApp(SelfUpdatingApp):
     def play_action(self) -> bool:
         if len(self.__playlist) == 0:
             return False
+
         if self.__selected_index != self.__playlist[self.__playing_index]:
-            self.__playing_index = self.__playlist.index(self.__selected_index)
+            self.__playing_index = self.__playlist.index(self.__selected_index])
             if self.__player.has_stream:
                 self.__player.stop_stream()
-        if not self.__player.has_stream:
-            self.__player.load_file(os.path.join(self.__directory,
-                                                 self.__files[self.__playlist[self.__playing_index]]))
-        self.__player.start_stream()
-        return True
+
+        if not self.__player.has_stream or not self.__player.is_active:
+            self.__player.load_file(os.path.join(self.__directory, self.__files[self.__playlist[self.__playing_index]]))
+
+        return self.__player.start_stream()
 
     def pause_action(self) -> bool:
         return self.__player.pause_stream()
@@ -329,7 +372,7 @@ class RadioApp(SelfUpdatingApp):
         self.__playing_index = (self.__playing_index - 1) % len(self.__files)
         self.__selected_index = self.__playlist[self.__playing_index]
 
-        if self.__player.is_active:
+        if self.__player.has_stream:
             self.stop_action()
             self.play_action()
 
@@ -339,11 +382,13 @@ class RadioApp(SelfUpdatingApp):
         self.__playing_index = (self.__playing_index + 1) % len(self.__files)
         self.__selected_index = self.__playlist[self.__playing_index]
 
-        if self.__player.is_active:
+        if self.__player.has_stream:
             self.stop_action()
             self.play_action()
 
     def random_action(self) -> bool:
+        if len(self.__playlist) == 0:
+            return True
         self.__is_random = True
         random.shuffle(self.__playlist)
         self.__playing_index = self.__playlist.index(self.__selected_index)
@@ -352,7 +397,10 @@ class RadioApp(SelfUpdatingApp):
     def order_action(self) -> bool:
         self.__is_random = False
         self.__playlist = list(range(0, len(self.__files)))
-        self.__playing_index = self.__selected_index
+        if len(self.__files) > 0:
+            self.__playing_index = min(self.__selected_index, len(self.__files) - 1)
+        else:
+            self.__playing_index = 0
         return True
 
     def decrease_volume_action(self):
@@ -420,7 +468,7 @@ class RadioApp(SelfUpdatingApp):
         _, _, t_width, t_height = self.__font.getbbox(text)
         draw.text((width // 2 - t_width // 2, vertical_limit - self.__META_INFO_HEIGHT // 2 - t_height // 2),
                   text, self.__color, font=self.__font)
-        vertical_limit = vertical_limit - self.__META_INFO_HEIGHT
+        vertical_limit -= self.__META_INFO_HEIGHT
 
         if self.__player.has_stream and len(self.__playlist) > 0:
             progress = self.__player.progress if self.__player.progress is not None else 0.0
@@ -432,13 +480,14 @@ class RadioApp(SelfUpdatingApp):
         _, _, t_width, t_height = self.__font.getbbox(text)
         draw.text((width // 2 - t_width // 2, vertical_limit - self.__META_INFO_HEIGHT // 2 - t_height // 2),
                   text, self.__color, font=self.__font)
-        vertical_limit = vertical_limit - self.__META_INFO_HEIGHT
+        vertical_limit -= self.__META_INFO_HEIGHT
 
         left_top = (0, 0)
         left, top = left_top
         right_bottom = (width, vertical_limit)
         right, bottom = right_bottom
-        max_entries = (bottom - top) // self.__LINE_HEIGHT
+        max_entries = max(1, (bottom - top) // self.__LINE_HEIGHT)
+
         if len(self.__files) > max_entries:
             if self.__selected_index < self.__top_index:
                 self.__top_index = self.__selected_index
@@ -470,8 +519,10 @@ class RadioApp(SelfUpdatingApp):
     def __get_files(self) -> list[str]:
         if not os.path.isdir(self.__directory):
             return []
-        return sorted([f for f in os.listdir(self.__directory) if os.path.splitext(f)[1].lower() in
-                       self.__supported_extensions], key=lambda f: f.lower())
+        return sorted(
+            [f for f in os.listdir(self.__directory) if os.path.splitext(f)[1].lower() in self.__supported_extensions],
+            key=lambda f: f.lower()
+        )
 
     @staticmethod
     def __run_amixer_get() -> str:
@@ -545,17 +596,17 @@ class RadioApp(SelfUpdatingApp):
         super().on_app_enter()
         self.__controls[self.__selected_control_index].on_focus()
 
-        # Auto-play when entering RAD (useful if rotary encoder isn't wired yet)
+        # Auto-play on RAD tab enter (helps when selector switch is the only navigation)
         if len(self.__files) > 0:
             try:
-                if not self.__player.has_stream or not self.__player.is_active:
+                if not self.__player.is_active:
                     self.play_action()
             except Exception:
                 pass
 
     @override
     def on_app_leave(self):
-        # Stop playback when leaving RAD so it doesn't continue across tabs
+        # Stop playback when leaving RAD
         try:
             self.stop_action()
         except Exception:
