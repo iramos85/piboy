@@ -26,13 +26,6 @@ class RadioApp(SelfUpdatingApp):
     __VOLUME_STEP = 10
 
     class ControlGroup:
-        """
-        Represents a group of control, where only a single control can be selected at the same time. Pass the control
-        group instance as a parameter to the init block of a control, where it can call the `listen` function to be
-        registered in this group. When selecting this control, it can call the `clear_selection` function to deselect
-        every other control in the group.
-        """
-
         def __init__(self):
             self.__controls: list['RadioApp.Control'] = []
 
@@ -44,17 +37,7 @@ class RadioApp(SelfUpdatingApp):
                 control.reset()
 
     class Control(ABC):
-        """
-        Represents a UI control element. A control has a texture, a callback and might have a control group that
-        unselects other controls in the same group, if this control gets selected.
-        """
-
         class SelectionState:
-            """
-            Container class representing a state of a control element. A selection state has an element color and
-            a background color, and also values determining if it represents focused and selected.
-            Initially, the state members are all none, replace them before usage or create new ones for a specific use.
-            """
             NONE: 'RadioApp.Control.SelectionState'
             FOCUSED: 'RadioApp.Control.SelectionState'
 
@@ -107,26 +90,20 @@ class RadioApp(SelfUpdatingApp):
             return self._selection_state.is_selected
 
         def _handle_control_group(self):
-            """Clears selection in the same control group"""
-            if not self.is_selected:
-                if self._control_group:
-                    self._control_group.clear_selection(self)
+            if not self.is_selected and self._control_group:
+                self._control_group.clear_selection(self)
 
         @abstractmethod
         def on_select(self):
-            """When pressing the A button while focussing this control"""
             raise NotImplementedError
 
         def on_focus(self):
-            """When moving focus on this control"""
             self._selection_state = self.SelectionState.FOCUSED
 
         def on_blur(self):
-            """When moving focus away from this control"""
             self._selection_state = self.SelectionState.NONE
 
         def reset(self):
-            """Resets the control to an unfocused state"""
             self._selection_state = self.SelectionState.NONE
 
         def draw(self, draw: ImageDraw.ImageDraw, left_top: tuple[int, int]):
@@ -137,12 +114,6 @@ class RadioApp(SelfUpdatingApp):
             draw.bitmap(left_top, self._icon_bitmap, fill=self._selection_state.color)
 
     class SwitchControl(Control):
-        """
-        Represents a UI control element. A switch control has two textures, that can be switched on selection. Thus, it
-        is never really in a selected state, but can switch between two states and can call different callbacks
-        depending on this state.
-        """
-
         def __init__(self, icon_bitmap: Image.Image, switched_icon_bitmap: Image.Image,
                      on_select: Callable[[], bool],
                      on_switched_select: Callable[[], bool],
@@ -155,7 +126,6 @@ class RadioApp(SelfUpdatingApp):
 
         def on_select(self):
             super()._handle_control_group()
-            # this is inverted because we switch states after successful action
             if self._is_switched:
                 if self._on_select():
                     self._is_switched = not self._is_switched
@@ -179,11 +149,6 @@ class RadioApp(SelfUpdatingApp):
                         fill=self._selection_state.color)
 
     class InstantControl(Control):
-        """
-        Represents a UI control element. An instant control can never be selected. When selecting, it only calls the
-        callback but stays in the same state, allowing to call the action again.
-        """
-
         def __init__(self, icon_bitmap: Image.Image, on_select: Callable[[], None],
                      control_group: Optional['RadioApp.ControlGroup'] = None):
             super().__init__(icon_bitmap, control_group)
@@ -194,7 +159,6 @@ class RadioApp(SelfUpdatingApp):
             self._on_select()
 
     class AudioPlayer:
-
         def __init__(self, callback_next: Callable[[], None]):
             self.__player = pyaudio.PyAudio()
             self.__total_frames = 0
@@ -203,6 +167,20 @@ class RadioApp(SelfUpdatingApp):
             self.__stream: Optional[pyaudio.Stream] = None
             self.__callback_next = callback_next
             self.__is_continuing = False
+            self.__output_device_index = self.__find_output_device_index("MAX98357A")
+
+        def __find_output_device_index(self, preferred_name: str) -> Optional[int]:
+            preferred_name = preferred_name.lower()
+            try:
+                for i in range(self.__player.get_device_count()):
+                    info = self.__player.get_device_info_by_index(i)
+                    name = str(info.get('name', '')).lower()
+                    max_out = int(info.get('maxOutputChannels', 0))
+                    if max_out > 0 and preferred_name in name:
+                        return i
+            except Exception:
+                pass
+            return None
 
         def __stream_callback(self, _1, frame_count, _2, _3) -> tuple[bytes, int]:
             data = self.__wave_read.readframes(frame_count)
@@ -223,12 +201,17 @@ class RadioApp(SelfUpdatingApp):
             self.__total_frames = self.__wave_read.getnframes()
             self.__played_frames = 0
 
-            self.__stream = self.__player.open(format=self.__player.get_format_from_width(
-                self.__wave_read.getsampwidth()),
+            open_kwargs = dict(
+                format=self.__player.get_format_from_width(self.__wave_read.getsampwidth()),
                 channels=self.__wave_read.getnchannels(),
                 rate=self.__wave_read.getframerate(),
                 output=True,
-                stream_callback=self.__stream_callback)
+                stream_callback=self.__stream_callback
+            )
+            if self.__output_device_index is not None:
+                open_kwargs["output_device_index"] = self.__output_device_index
+
+            self.__stream = self.__player.open(**open_kwargs)
 
         def start_stream(self) -> bool:
             if self.__stream:
@@ -293,21 +276,19 @@ class RadioApp(SelfUpdatingApp):
         self.__supported_extensions = ['.wav']
         self.__files: list[str] = self.__get_files()
 
-        self.__selected_index = 0  # what we have selected with our cursor
-        self.__top_index = 0  # what is on top in case the list is greater than screen space
-        self.__playlist: list[int] = list(range(0, len(self.__files)))  # order of the tracks to play
-        self.__playing_index = 0  # what we are currently playing from the playlist
+        self.__selected_index = 0
+        self.__top_index = 0
+        self.__playlist: list[int] = list(range(0, len(self.__files)))
+        self.__playing_index = 0
         self.__is_random = False
         self.__volume: Optional[int] = None
         try:
-            # will only work on raspberry pi for now
             self.__volume = self.__get_volume()
         except (FileNotFoundError, ValueError):
-            pass
+            self.__volume = None
 
         self.__player = self.AudioPlayer(self.__call_next)
 
-        # init selection states
         self.Control.SelectionState.NONE = self.Control.SelectionState(self.__color_dark, self.__background, False, False)
         self.Control.SelectionState.FOCUSED = self.Control.SelectionState(self.__color, self.__background, True, False)
 
@@ -324,11 +305,6 @@ class RadioApp(SelfUpdatingApp):
         self.__selected_control_index = 2
 
     def play_action(self) -> bool:
-        """
-        Loads current selected file if no stream is loaded.
-        Resumes playing a loaded stream.
-        :return: `True` if stream was started, else `False` (e.g. playlist is empty)
-        """
         if len(self.__playlist) == 0:
             return False
         if self.__selected_index != self.__playlist[self.__playing_index]:
@@ -342,92 +318,68 @@ class RadioApp(SelfUpdatingApp):
         return True
 
     def pause_action(self) -> bool:
-        """
-        Pauses a currently loaded stream.
-        :return: `True` if stream was paused, else `False` (e.g. there was no active stream)
-        """
         return self.__player.pause_stream()
 
     def stop_action(self):
-        """
-        Stops and clears a currently loaded stream.
-        """
         self.__player.stop_stream()
 
     def prev_action(self):
-        """
-        Stops and clears a stream, selects a previous track and plays it if a stream is loaded.
-        Just selects a previous track otherwise.
-        """
+        if len(self.__files) == 0:
+            return
         self.__playing_index = (self.__playing_index - 1) % len(self.__files)
         self.__selected_index = self.__playlist[self.__playing_index]
-
         if self.__player.is_active:
             self.stop_action()
             self.play_action()
 
     def skip_action(self):
-        """
-        Stops and clears a stream, selects a next track and plays it if a stream is loaded.
-        Just selects a next track otherwise.
-        """
+        if len(self.__files) == 0:
+            return
         self.__playing_index = (self.__playing_index + 1) % len(self.__files)
         self.__selected_index = self.__playlist[self.__playing_index]
-
         if self.__player.is_active:
             self.stop_action()
             self.play_action()
 
     def random_action(self) -> bool:
-        """
-        Shuffles the playlist and places the current index at the track we are currently playing or looking at.
-        :return: always `True`
-        """
         self.__is_random = True
         random.shuffle(self.__playlist)
-        # set playlist index to the track we are currently playing or looking at
         self.__playing_index = self.__playlist.index(self.__selected_index)
         return True
 
     def order_action(self) -> bool:
-        """
-        Creates an ordered playlist and places the current index at the track we are currently playing or looking
-        at.
-        :return: always `True`
-        """
         self.__is_random = False
         self.__playlist = list(range(0, len(self.__files)))
-        # set playlist index to the track we are currently playing or looking at
         self.__playing_index = self.__selected_index
         return True
 
     def decrease_volume_action(self):
-        """
-        Decreases the volume by one volume step. Only works on Linux with `amixer`
-        """
-        current_value = self.__get_volume()
-        if current_value % self.__VOLUME_STEP == 0:
-            self.__set_volume(max(current_value - self.__VOLUME_STEP, 0))
-        else:
-            aligned_value = current_value // self.__VOLUME_STEP * self.__VOLUME_STEP
-            self.__set_volume(max(aligned_value - self.__VOLUME_STEP, 0))
-        self.__volume = self.__get_volume()
+        try:
+            current_value = self.__get_volume()
+            if current_value % self.__VOLUME_STEP == 0:
+                self.__set_volume(max(current_value - self.__VOLUME_STEP, 0))
+            else:
+                aligned_value = current_value // self.__VOLUME_STEP * self.__VOLUME_STEP
+                self.__set_volume(max(aligned_value - self.__VOLUME_STEP, 0))
+            self.__volume = self.__get_volume()
+        except ValueError:
+            # MAX98357A often has no hardware mixer control; leave volume display unchanged
+            pass
 
     def increase_volume_action(self):
-        """
-        Increases the volume by one volume step. Only works on Linux with `amixer`
-        """
-        current_value = self.__get_volume()
-        if current_value % self.__VOLUME_STEP == 0:
-            self.__set_volume(min(current_value + self.__VOLUME_STEP, 100))
-        else:
-            aligned_value = (current_value + self.__VOLUME_STEP) // self.__VOLUME_STEP * self.__VOLUME_STEP
-            self.__set_volume(min(aligned_value + self.__VOLUME_STEP, 100))
-        self.__volume = self.__get_volume()
+        try:
+            current_value = self.__get_volume()
+            if current_value % self.__VOLUME_STEP == 0:
+                self.__set_volume(min(current_value + self.__VOLUME_STEP, 100))
+            else:
+                aligned_value = (current_value + self.__VOLUME_STEP) // self.__VOLUME_STEP * self.__VOLUME_STEP
+                self.__set_volume(min(aligned_value + self.__VOLUME_STEP, 100))
+            self.__volume = self.__get_volume()
+        except ValueError:
+            pass
 
     def __call_next(self):
-        # go to next file if player was not paused or stopped between end of file and callback
-        if self.__player.is_continuing:
+        if self.__player.is_continuing and len(self.__files) > 0:
             self.__playing_index = (self.__playing_index + 1) % len(self.__files)
             self.__selected_index = self.__playlist[self.__playing_index]
             self.__player.stop_stream()
@@ -452,9 +404,7 @@ class RadioApp(SelfUpdatingApp):
         draw = ImageDraw.Draw(image)
         width, height = self.__app_size
 
-        # draw controls
-        controls_total_width = sum([c.size[0] for c in self.__controls]) + self.__CONTROL_PADDING * (
-                len(self.__controls) - 1)
+        controls_total_width = sum([c.size[0] for c in self.__controls]) + self.__CONTROL_PADDING * (len(self.__controls) - 1)
         max_control_height = max([c.size[1] for c in self.__controls])
         cursor: tuple[int, int] = (width // 2 - controls_total_width // 2,
                                    height - max_control_height - self.__CONTROL_BOTTOM_OFFSET)
@@ -464,24 +414,25 @@ class RadioApp(SelfUpdatingApp):
             cursor = (cursor[0] + c_width + self.__CONTROL_PADDING, cursor[1])
         vertical_limit = cursor[1]
 
-        # draw volume
-        text = f'Volume: {self.__volume}%'
+        vol_display = f'{self.__volume}%' if self.__volume is not None else 'N/A'
+        text = f'Volume: {vol_display}'
         _, _, t_width, t_height = self.__font.getbbox(text)
         draw.text((width // 2 - t_width // 2, vertical_limit - self.__META_INFO_HEIGHT // 2 - t_height // 2),
                   text, self.__color, font=self.__font)
         vertical_limit = vertical_limit - self.__META_INFO_HEIGHT
 
-        # draw currently playing track
-        text = f'{self.__player.progress:.1%}: {self.__files[self.__playlist[self.__playing_index]]}' \
-            if self.__player.has_stream else 'Empty'
-        while self.__font.getbbox(text)[2] > width:
-            text = text[:-1]  # cut off last char until it fits
+        if self.__player.has_stream and len(self.__playlist) > 0:
+            progress = self.__player.progress if self.__player.progress is not None else 0.0
+            text = f'{progress:.1%}: {self.__files[self.__playlist[self.__playing_index]]}'
+        else:
+            text = 'Empty'
+        while self.__font.getbbox(text)[2] > width and len(text) > 0:
+            text = text[:-1]
         _, _, t_width, t_height = self.__font.getbbox(text)
         draw.text((width // 2 - t_width // 2, vertical_limit - self.__META_INFO_HEIGHT // 2 - t_height // 2),
                   text, self.__color, font=self.__font)
         vertical_limit = vertical_limit - self.__META_INFO_HEIGHT
 
-        # draw track list
         left_top = (0, 0)
         left, top = left_top
         right_bottom = (width, vertical_limit)
@@ -494,63 +445,78 @@ class RadioApp(SelfUpdatingApp):
                 self.__top_index = self.__selected_index - max_entries + 1
         else:
             self.__top_index = 0
+
         cursor = left_top
         for index, file in enumerate(self.__files[self.__top_index:]):
-            index += self.__top_index  # pad index if entries are skipped
+            index += self.__top_index
             if self.__selected_index == index:
                 draw.rectangle(cursor + (right, cursor[1] + self.__LINE_HEIGHT), self.__color_dark)
             if index == max_entries + self.__top_index:
                 draw.text(cursor, '...', self.__color, font=self.__font)
                 break
             text = file
-            while self.__font.getbbox(text)[2] > right - left:
-                text = text[:-1]  # cut off last char until it fits
+            while self.__font.getbbox(text)[2] > right - left and len(text) > 0:
+                text = text[:-1]
             draw.text(cursor, text, self.__color, font=self.__font)
             cursor = (cursor[0], cursor[1] + self.__LINE_HEIGHT)
 
         if partial:
             right_bottom = width, height
-            yield image.crop(left_top + right_bottom), *left_top  # noqa (unpacking type check fail)
+            yield image.crop(left_top + right_bottom), *left_top
         else:
             yield image, 0, 0
 
     def __get_files(self) -> list[str]:
-        return sorted([f for f in os.listdir(self.__directory) if os.path.splitext(f)[1] in
+        if not os.path.isdir(self.__directory):
+            return []
+        return sorted([f for f in os.listdir(self.__directory) if os.path.splitext(f)[1].lower() in
                        self.__supported_extensions], key=lambda f: f.lower())
 
     @staticmethod
+    def __run_amixer_get() -> str:
+        """
+        Try common controls on the MAX98357A card first, then fall back.
+        """
+        candidates = [
+            ['amixer', '-c', 'MAX98357A', '-M', 'sget', 'PCM'],
+            ['amixer', '-c', 'MAX98357A', '-M', 'sget', 'Digital'],
+            ['amixer', '-c', 'MAX98357A', '-M', 'sget', 'Master'],
+            ['amixer', '-M', 'sget', 'PCM'],
+            ['amixer', '-M', 'sget', 'Digital'],
+            ['amixer', '-M', 'sget', 'Master'],
+        ]
+        for cmd in candidates:
+            result = run(cmd, stdout=PIPE, stderr=PIPE)
+            if result.returncode == 0 and result.stdout:
+                return result.stdout.decode('utf-8')
+        raise ValueError('Error getting current volume: no supported amixer control found')
+
+    @staticmethod
     def __get_volume() -> int:
-        """
-        Returns the current volume value on the primary sound mixer. Works only on Linux (Raspberry OS).
-        :return: current volume value
-        """
-        # noinspection SpellCheckingInspection
-        result = run(['amixer', '-M', 'sget', 'PCM'], stdout=PIPE)
-        if result.returncode != 0:
-            raise ValueError(f'Error getting current volume value: {result.returncode}')
-        if result.stdout is not None:
-            content = result.stdout.decode('utf-8')
-            match = re.search(r'\[(\d+)%\]', content)  # noqa [Python Zen #2]: explicit is better than implicit
-            if match:
-                return int(match.group(1))
-            else:
-                raise ValueError('Error getting current volume: No match')
-        raise ValueError('Error getting current volume value: No content')
+        content = RadioApp.__run_amixer_get()
+        match = re.search(r'\[(\d+)%\]', content)
+        if match:
+            return int(match.group(1))
+        raise ValueError('Error getting current volume: No match')
 
     @staticmethod
     def __set_volume(volume: int):
-        """
-        Updates the volume value on the primary sound mixer. Value must be between 0 and 100 (inclusive).
-        Works only on Linux (Raspberry OS).
-        :param volume: volume value to set
-        """
-        # python allows this mathematical expression unlike other languages
         if not 0 <= volume <= 100:
             raise ValueError(f'Error setting volume value: Volume must be between 0 and 100, was {volume}')
-        # noinspection SpellCheckingInspection
-        result = run(['amixer', '-q', '-M', 'sset', 'PCM', f'{volume}%'], stdout=PIPE)
-        if result.returncode != 0:
-            raise ValueError(f'Error setting volume value: {result.returncode}')
+
+        candidates = [
+            ['amixer', '-c', 'MAX98357A', '-q', '-M', 'sset', 'PCM', f'{volume}%'],
+            ['amixer', '-c', 'MAX98357A', '-q', '-M', 'sset', 'Digital', f'{volume}%'],
+            ['amixer', '-c', 'MAX98357A', '-q', '-M', 'sset', 'Master', f'{volume}%'],
+            ['amixer', '-q', '-M', 'sset', 'PCM', f'{volume}%'],
+            ['amixer', '-q', '-M', 'sset', 'Digital', f'{volume}%'],
+            ['amixer', '-q', '-M', 'sset', 'Master', f'{volume}%'],
+        ]
+        for cmd in candidates:
+            result = run(cmd, stdout=PIPE, stderr=PIPE)
+            if result.returncode == 0:
+                return
+        raise ValueError('Error setting volume value: no supported amixer control found')
 
     @override
     def on_key_left(self):

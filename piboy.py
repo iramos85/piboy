@@ -1,9 +1,12 @@
 import logging
+import os
+import subprocess
 import threading
 import time
 from datetime import datetime
 from logging.config import fileConfig
 from typing import Any, Callable, Generator, Self
+from zoneinfo import ZoneInfo
 
 from injector import Injector, Module, provider, singleton
 from PIL import Image, ImageDraw
@@ -32,6 +35,36 @@ from interaction.UnifiedInteraction import UnifiedInteraction
 
 fileConfig(fname='config.ini')
 logger = logging.getLogger(__name__)
+
+# Force displayed/footer clock to Central Time
+LOCAL_TZ = ZoneInfo("America/Chicago")
+
+# UI sound settings
+TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
+
+
+def play_tab_switch_sfx():
+    """
+    Play a short UI sound without blocking the app.
+    Tries MAX98357A first, then falls back to default ALSA output.
+    """
+    if not os.path.isfile(TAB_SWITCH_SFX):
+        return
+
+    def _worker():
+        cmds = [
+            ['aplay', '-q', '-D', 'plughw:CARD=MAX98357A,DEV=0', TAB_SWITCH_SFX],
+            ['aplay', '-q', TAB_SWITCH_SFX],
+        ]
+        for cmd in cmds:
+            try:
+                result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                if result.returncode == 0:
+                    return
+            except Exception:
+                continue
+
+    threading.Thread(target=_worker, daemon=True).start()
 
 
 class AppState:
@@ -124,21 +157,19 @@ class AppState:
         self.active_app.on_app_leave()
         self.__active_app = index
         self.active_app.on_app_enter()
+        play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
     def watch_function(self, display: Display):
         while True:
-            now = datetime.now()
-            # wait for next second
+            now = datetime.now(LOCAL_TZ)
             time.sleep(1.0 - now.microsecond / 1000000.0)
 
-            # draw the complete footer to remove existing clock display
             image, x0, y0 = draw_footer(self.image_buffer, self)
             display.show(image, x0, y0)
             self.__tick()
 
     def update_display(self, display: Display, partial=False):
-        """Draw call that handles the complete cycle of drawing a new image to the display."""
         image = self.clear_buffer()
         app_bbox = (self.__environment.app_config.app_side_offset,
                     self.__environment.app_config.app_top_offset,
@@ -184,12 +215,14 @@ class AppState:
         self.active_app.on_app_leave()
         self.next_app()
         self.active_app.on_app_enter()
+        play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
     def on_rotary_decrease(self, display: Display):
         self.active_app.on_app_leave()
         self.previous_app()
         self.active_app.on_app_enter()
+        play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
 
@@ -304,7 +337,6 @@ class AppModule(Module):
             from interaction.ILI9486Display import ILI9486Display
 
             def reset_and_init():
-                # make sure that display is ILI9486Interface to call the reset function, should be always true
                 if isinstance(display, ILI9486Display):
                     display.reset()
                 display.show(state.clear_buffer(), 0, 0)
@@ -317,9 +349,7 @@ class AppModule(Module):
                 lambda: state.on_key_left(display), lambda: state.on_key_right(display),
                 lambda: state.on_key_up(display), lambda: state.on_key_down(display),
                 lambda: state.on_key_a(display), lambda: state.on_key_b(display),
-                # Remap encoder rotation to app-internal navigation (down/up)
                 lambda: state.on_key_down(display), lambda: state.on_key_up(display),
-                # Encoder push acts like A/select
                 lambda: state.on_key_a(display)
             )
         else:
@@ -348,15 +378,17 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         logger.warning("Mode selector thread not started (RPi.GPIO unavailable): %s", ex)
         return
 
-    mode_pins = {
-    5: 0,
-    6: 1,
-    12: 2,
-    13: 3,
-    20: 6,
-}
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
 
-    # Configure selector pins as pull-ups
+    mode_pins = {
+        5: 0,    # INV
+        6: 1,    # SYS
+        12: 2,   # ENV
+        13: 3,   # RAD
+        20: 6,   # MAP (moved from GPIO19 to GPIO20)
+    }
+
     for pin in mode_pins:
         GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
 
@@ -374,7 +406,6 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         while True:
             idx = read_active_index()
 
-            # Simple debounce / stability filter
             if idx == candidate:
                 stable_count += 1
             else:
@@ -397,10 +428,10 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
 
 def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, int]:
     width, height = state.environment.app_config.resolution
-    footer_height = 20  # height of the footer
-    footer_bottom_offset = 3  # spacing to the bottom
-    icon_padding = 3  # padding between status icons
-    footer_side_offset = state.environment.app_config.app_side_offset  # spacing to the sides
+    footer_height = 20
+    footer_bottom_offset = 3
+    icon_padding = 3
+    footer_side_offset = state.environment.app_config.app_side_offset
     font = state.environment.app_config.font_header
     draw = ImageDraw.Draw(image)
 
@@ -417,22 +448,18 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
         DeviceStatus.UNAVAILABLE: state.environment.app_config.background
     }
 
-    # reset area
     draw.rectangle(start + end, fill=state.environment.app_config.accent_dark)
 
-    # draw network status
     nw_status_padding = (footer_height - resources.network_icon.height) // 2
     nw_status_color = connection_status_color[state.network_status_provider.get_connection_status()]
     draw.bitmap((cursor_x + icon_padding, cursor_y + nw_status_padding), resources.network_icon, fill=nw_status_color)
     cursor_x += resources.network_icon.width + icon_padding
 
-    # draw gps status
     gps_status_padding = (footer_height - resources.gps_icon.height) // 2
     gps_status_color = device_status_color[state.location_provider.get_device_status()]
     draw.bitmap((cursor_x + icon_padding, cursor_y + gps_status_padding), resources.gps_icon, fill=gps_status_color)
     cursor_x += resources.gps_icon.width + icon_padding
 
-    # draw battery status
     state_of_charge_str = f'{state.battery_status_provider.get_state_of_charge():.0%}'
     _, _, text_width, text_height = font.getbbox(state_of_charge_str)
     text_padding = (footer_height - text_height) // 2
@@ -440,8 +467,7 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
               state.environment.app_config.accent, font=font)
     cursor_x += text_width
 
-    # draw time (MM-DD-YYYY + 12-hour AM/PM)
-    date_str = datetime.now().strftime('%m-%d-%Y %I:%M:%S %p')
+    date_str = datetime.now(LOCAL_TZ).strftime('%m-%d-%Y %I:%M:%S %p')
     _, _, text_width, text_height = font.getbbox(date_str)
     text_padding = (footer_height - text_height) // 2
     draw.text((width - footer_side_offset - text_padding - text_width, cursor_y + text_padding), date_str,
@@ -454,16 +480,15 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
 
 def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, int]:
     width, height = state.environment.app_config.resolution
-    vertical_line = 5  # vertical limiter line
-    header_top_offset = state.environment.app_config.app_top_offset - vertical_line  # base for header
-    header_side_offset = state.environment.app_config.app_side_offset  # spacing to the sides
-    app_spacing = 20  # space between app headers
-    app_padding = 5  # space around app header
+    vertical_line = 5
+    header_top_offset = state.environment.app_config.app_top_offset - vertical_line
+    header_side_offset = state.environment.app_config.app_side_offset
+    app_spacing = 20
+    app_padding = 5
     draw = ImageDraw.Draw(image)
     color_background = state.environment.app_config.background
     color_accent = state.environment.app_config.accent
 
-    # draw base header lines
     start = (header_side_offset, header_top_offset + vertical_line)
     end = (header_side_offset, header_top_offset)
     draw.line(start + end, fill=color_accent)
@@ -474,7 +499,6 @@ def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     end = (width - header_side_offset - 1, header_top_offset + vertical_line)
     draw.line(start + end, fill=color_accent)
 
-    # draw app short name header
     font = state.environment.app_config.font_header
     max_text_width = width - (2 * header_side_offset)
     app_text_width = sum(int(font.getbbox(app.title)[2]) for app in state.apps) + (len(state.apps) - 1) * app_spacing
@@ -520,24 +544,19 @@ if __name__ == '__main__':
         .add_app(injector.get(ClockApp)) \
         .add_app(injector.get(MapApp))
 
-    # start the auto mount service on raspberry
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
         udev_service = UDevService()
         udev_service.start()
 
-    # Start selector polling thread (5-position rotary switch -> direct app select)
     if injector.get(Environment).is_raspberry_pi:
         start_mode_selector_thread(app_state, DISPLAY)
 
-    # initially draw the empty buffer to initialize all pixels on the hardware module
     DISPLAY.show(app_state.image_buffer, 0, 0)
-    # then continue with the initial draw call
     app_state.update_display(DISPLAY)
     app_state.active_app.on_app_enter()
 
     try:
-        # blocking function that updates the clock
         app_state.watch_function(DISPLAY)
     except KeyboardInterrupt:
         pass
