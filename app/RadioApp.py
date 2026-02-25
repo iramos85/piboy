@@ -328,6 +328,7 @@ class RadioApp(SelfUpdatingApp):
             return
         self.__playing_index = (self.__playing_index - 1) % len(self.__files)
         self.__selected_index = self.__playlist[self.__playing_index]
+
         if self.__player.is_active:
             self.stop_action()
             self.play_action()
@@ -337,6 +338,7 @@ class RadioApp(SelfUpdatingApp):
             return
         self.__playing_index = (self.__playing_index + 1) % len(self.__files)
         self.__selected_index = self.__playlist[self.__playing_index]
+
         if self.__player.is_active:
             self.stop_action()
             self.play_action()
@@ -363,7 +365,6 @@ class RadioApp(SelfUpdatingApp):
                 self.__set_volume(max(aligned_value - self.__VOLUME_STEP, 0))
             self.__volume = self.__get_volume()
         except ValueError:
-            # MAX98357A often has no hardware mixer control; leave volume display unchanged
             pass
 
     def increase_volume_action(self):
@@ -474,9 +475,6 @@ class RadioApp(SelfUpdatingApp):
 
     @staticmethod
     def __run_amixer_get() -> str:
-        """
-        Try common controls on the MAX98357A card first, then fall back.
-        """
         candidates = [
             ['amixer', '-c', 'MAX98357A', '-M', 'sget', 'PCM'],
             ['amixer', '-c', 'MAX98357A', '-M', 'sget', 'Digital'],
@@ -546,3 +544,20 @@ class RadioApp(SelfUpdatingApp):
     def on_app_enter(self):
         super().on_app_enter()
         self.__controls[self.__selected_control_index].on_focus()
+
+        # Auto-play when entering RAD (useful if rotary encoder isn't wired yet)
+        if len(self.__files) > 0:
+            try:
+                if not self.__player.has_stream or not self.__player.is_active:
+                    self.play_action()
+            except Exception:
+                pass
+
+    @override
+    def on_app_leave(self):
+        # Stop playback when leaving RAD so it doesn't continue across tabs
+        try:
+            self.stop_action()
+        except Exception:
+            pass
+        super().on_app_leave()
