@@ -33,7 +33,7 @@ from interaction.Display import Display
 from interaction.Input import Input
 from interaction.UnifiedInteraction import UnifiedInteraction
 
-fileConfig(fname='config.ini')
+fileConfig(fname="config.ini")
 logger = logging.getLogger(__name__)
 
 # Force displayed/footer clock to Central Time
@@ -41,6 +41,24 @@ LOCAL_TZ = ZoneInfo("America/Chicago")
 
 # UI sound settings
 TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
+
+# -----------------------------------------
+# Rotary encoder pins (Adafruit #377)
+# Verified working in your test script:
+#   A -> GPIO17
+#   B -> GPIO27
+#   SW -> GPIO22
+#   Common -> GND
+# -----------------------------------------
+ENC_A_PIN = 17
+ENC_B_PIN = 27
+ENC_SW_PIN = 22
+
+# Encoder behavior tuning
+ENC_POLL_S = 0.002          # 2ms polling; stable and responsive
+ENC_STEP_RATE_LIMIT_S = 0.030  # suppress bounce bursts
+BTN_DEBOUNCE_S = 0.060
+BTN_LONGPRESS_S = 0.70
 
 
 def play_tab_switch_sfx():
@@ -53,8 +71,8 @@ def play_tab_switch_sfx():
 
     def _worker():
         cmds = [
-            ['aplay', '-q', '-D', 'plughw:CARD=MAX98357A,DEV=0', TAB_SWITCH_SFX],
-            ['aplay', '-q', TAB_SWITCH_SFX],
+            ["aplay", "-q", "-D", "plughw:CARD=MAX98357A,DEV=0", TAB_SWITCH_SFX],
+            ["aplay", "-q", TAB_SWITCH_SFX],
         ]
         for cmd in cmds:
             try:
@@ -68,12 +86,16 @@ def play_tab_switch_sfx():
 
 
 class AppState:
-
     __bit = 0
 
-    def __init__(self, e: Environment, network_status_provider: NetworkStatusProvider,
-                 location_provider: LocationProvider, battery_status_provider: BatteryStatusProvider,
-                 environment_data_provider: EnvironmentDataProvider):
+    def __init__(
+        self,
+        e: Environment,
+        network_status_provider: NetworkStatusProvider,
+        location_provider: LocationProvider,
+        battery_status_provider: BatteryStatusProvider,
+        environment_data_provider: EnvironmentDataProvider,
+    ):
         self.__environment = e
         self.__network_status_provider = network_status_provider
         self.__location_provider = location_provider
@@ -84,7 +106,7 @@ class AppState:
         self.__active_app = 0
 
     def __init_buffer(self) -> Image.Image:
-        return Image.new('RGB', self.__environment.app_config.resolution, self.__environment.app_config.background)
+        return Image.new("RGB", self.__environment.app_config.resolution, self.__environment.app_config.background)
 
     def __tick(self):
         self.__bit ^= 1
@@ -163,7 +185,7 @@ class AppState:
     def watch_function(self, display: Display):
         while True:
             now = datetime.now(LOCAL_TZ)
-            time.sleep(1.0 - now.microsecond / 1000000.0)
+            time.sleep(1.0 - now.microsecond / 1_000_000.0)
 
             image, x0, y0 = draw_footer(self.image_buffer, self)
             display.show(image, x0, y0)
@@ -171,10 +193,12 @@ class AppState:
 
     def update_display(self, display: Display, partial=False):
         image = self.clear_buffer()
-        app_bbox = (self.__environment.app_config.app_side_offset,
-                    self.__environment.app_config.app_top_offset,
-                    self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
-                    self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset)
+        app_bbox = (
+            self.__environment.app_config.app_side_offset,
+            self.__environment.app_config.app_top_offset,
+            self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+            self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
+        )
         x_offset, y_offset = app_bbox[0:2]
         if partial:
             for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
@@ -186,6 +210,7 @@ class AppState:
                 image.paste(patch, (x0 + x_offset, y0 + y_offset))
             display.show(image.crop(app_bbox), x_offset, y_offset)
 
+    # “Button” handlers (still used by rotary mapping)
     def on_key_left(self, display: Display):
         self.active_app.on_key_left()
         self.update_display(display, partial=True)
@@ -227,7 +252,6 @@ class AppState:
 
 
 class AppModule(Module):
-
     __unified_instance: UnifiedInteraction | None = None
 
     def register_external_tk_interaction(self, tk_instance: UnifiedInteraction):
@@ -236,9 +260,21 @@ class AppModule(Module):
     @staticmethod
     def __create_tk_interaction(state: AppState, app_config: AppConfig) -> UnifiedInteraction:
         from interaction.TkInteraction import TkInteraction
-        return TkInteraction(state.on_key_left, state.on_key_right, state.on_key_up, state.on_key_down,
-                             state.on_key_a, state.on_key_b, state.on_rotary_increase, state.on_rotary_decrease,
-                             lambda _: None, app_config.resolution, app_config.background, app_config.accent_dark)
+
+        return TkInteraction(
+            state.on_key_left,
+            state.on_key_right,
+            state.on_key_up,
+            state.on_key_down,
+            state.on_key_a,
+            state.on_key_b,
+            state.on_rotary_increase,
+            state.on_rotary_decrease,
+            lambda _: None,
+            app_config.resolution,
+            app_config.background,
+            app_config.accent_dark,
+        )
 
     @singleton
     @provider
@@ -258,21 +294,26 @@ class AppModule(Module):
 
     @singleton
     @provider
-    def provide_app_state(self, e: Environment, network_status_provider: NetworkStatusProvider,
-                          location_provider: LocationProvider,
-                          battery_status_provider: BatteryStatusProvider,
-                          environment_data_provider: EnvironmentDataProvider) -> AppState:
-        return AppState(e, network_status_provider, location_provider, battery_status_provider,
-                        environment_data_provider)
+    def provide_app_state(
+        self,
+        e: Environment,
+        network_status_provider: NetworkStatusProvider,
+        location_provider: LocationProvider,
+        battery_status_provider: BatteryStatusProvider,
+        environment_data_provider: EnvironmentDataProvider,
+    ) -> AppState:
+        return AppState(e, network_status_provider, location_provider, battery_status_provider, environment_data_provider)
 
     @singleton
     @provider
     def provide_environment_data_service(self, e: Environment) -> EnvironmentDataProvider:
         if e.is_raspberry_pi:
             from data.BME280EnvironmentDataProvider import BME280EnvironmentDataProvider
+
             return BME280EnvironmentDataProvider(e.env_sensor_config.port, e.env_sensor_config.address)
         else:
             from data.FakeEnvironmentDataProvider import FakeEnvironmentDataProvider
+
             return FakeEnvironmentDataProvider()
 
     @singleton
@@ -280,9 +321,11 @@ class AppModule(Module):
     def provide_location_service(self, e: Environment) -> LocationProvider:
         if e.is_raspberry_pi:
             from data.SerialGPSLocationProvider import SerialGPSLocationProvider
+
             return SerialGPSLocationProvider(e.gps_module_config.port, baud_rate=e.gps_module_config.baud_rate)
         else:
             from data.IPLocationProvider import IPLocationProvider
+
             return IPLocationProvider(apply_inaccuracy=True)
 
     @singleton
@@ -295,9 +338,11 @@ class AppModule(Module):
     def provide_network_status_service(self, e: Environment) -> NetworkStatusProvider:
         if e.is_raspberry_pi:
             from data.NetworkManagerStatusProvider import NetworkManagerStatusProvider
+
             return NetworkManagerStatusProvider()
         else:
             from data.FakeNetworkStatusProvider import FakeNetworkStatusProvider
+
             return FakeNetworkStatusProvider()
 
     @singleton
@@ -305,9 +350,11 @@ class AppModule(Module):
     def provide_battery_status_service(self, e: Environment) -> BatteryStatusProvider:
         if e.is_raspberry_pi:
             from data.ADS1115BatteryStatusProvider import ADS1115BatteryStatusProvider
+
             return ADS1115BatteryStatusProvider(e.adc_config.port, e.adc_config.address)
         else:
             from data.FakeBatteryStatusProvider import FakeBatteryStatusProvider
+
             return FakeBatteryStatusProvider()
 
     @singleton
@@ -322,8 +369,12 @@ class AppModule(Module):
             from interaction.ILI9486Display import ILI9486Display
 
             spi_device_config = e.display_config.display_device
-            return ILI9486Display((spi_device_config.bus, spi_device_config.device),
-                                  e.display_config.dc_pin, e.display_config.rst_pin, e.display_config.flip_display)
+            return ILI9486Display(
+                (spi_device_config.bus, spi_device_config.device),
+                e.display_config.dc_pin,
+                e.display_config.rst_pin,
+                e.display_config.flip_display,
+            )
         else:
             if self.__unified_instance is None:
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
@@ -332,26 +383,16 @@ class AppModule(Module):
     @singleton
     @provider
     def provide_input(self, e: Environment, state: AppState, display: Display) -> Input:
+        """
+        IMPORTANT: We intentionally do NOT use GPIOInput anymore.
+        All navigation is driven by the rotary encoder thread.
+        """
         if e.is_raspberry_pi:
-            from interaction.GPIOInput import GPIOInput
-            from interaction.ILI9486Display import ILI9486Display
+            class _DummyInput(Input):
+                def close(self):
+                    return
 
-            def reset_and_init():
-                if isinstance(display, ILI9486Display):
-                    display.reset()
-                display.show(state.clear_buffer(), 0, 0)
-
-            return GPIOInput(
-                e.keypad_config.left_pin, e.keypad_config.right_pin,
-                e.keypad_config.up_pin, e.keypad_config.down_pin,
-                e.keypad_config.a_pin, e.keypad_config.b_pin,
-                e.rotary_config.rotary_device, e.rotary_config.sw_pin,
-                lambda: state.on_key_left(display), lambda: state.on_key_right(display),
-                lambda: state.on_key_up(display), lambda: state.on_key_down(display),
-                lambda: state.on_key_a(display), lambda: state.on_key_b(display),
-                lambda: state.on_key_down(display), lambda: state.on_key_up(display),
-                lambda: state.on_key_a(display)
-            )
+            return _DummyInput()
         else:
             if self.__unified_instance is None:
                 self.__unified_instance = self.__create_tk_interaction(state, e.app_config)
@@ -382,11 +423,11 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     GPIO.setwarnings(False)
 
     mode_pins = {
-        5: 0,    # INV
-        6: 1,    # SYS
-        12: 2,   # ENV
-        13: 3,   # RAD
-        20: 6,   # MAP (moved from GPIO19 to GPIO20)
+        5: 0,   # INV
+        6: 1,   # SYS
+        12: 2,  # ENV
+        13: 3,  # RAD
+        20: 6,  # MAP (moved from GPIO19 to GPIO20)
     }
 
     for pin in mode_pins:
@@ -421,9 +462,119 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
 
             time.sleep(0.02)
 
-    t = threading.Thread(target=worker, daemon=True)
-    t.start()
+    threading.Thread(target=worker, daemon=True).start()
     logger.info("Started mode selector thread")
+
+
+def start_rotary_encoder_thread(app_state: AppState, display: Display):
+    """
+    Polling rotary encoder driver (no GPIO edge interrupts).
+    This avoids 'Failed to add edge detection' entirely.
+
+    Mappings:
+      CW  -> on_key_down
+      CCW -> on_key_up
+      short press -> on_key_a
+      long press  -> on_key_b
+    """
+    try:
+        import RPi.GPIO as GPIO
+    except Exception as ex:
+        logger.warning("Rotary thread not started (RPi.GPIO unavailable): %s", ex)
+        return
+
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setwarnings(False)
+
+    for pin in (ENC_A_PIN, ENC_B_PIN, ENC_SW_PIN):
+        GPIO.setup(pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+
+    # Quadrature decode via state transitions
+    last_state = (GPIO.input(ENC_A_PIN) << 1) | GPIO.input(ENC_B_PIN)
+    last_step_t = 0.0
+
+    # Button state
+    btn_last = GPIO.input(ENC_SW_PIN)
+    btn_last_change_t = time.monotonic()
+    btn_press_t = None  # type: float | None
+    long_fired = False
+
+    # Transition table: maps (prev<<2 | curr) to direction
+    # +1 = CW, -1 = CCW, 0 = invalid/no move
+    trans = {
+        0b0001: +1,
+        0b0010: -1,
+        0b0100: -1,
+        0b0111: +1,
+        0b1000: +1,
+        0b1011: -1,
+        0b1101: -1,
+        0b1110: +1,
+    }
+
+    def worker():
+        nonlocal last_state, last_step_t, btn_last, btn_last_change_t, btn_press_t, long_fired
+
+        while True:
+            # --- encoder ---
+            a = GPIO.input(ENC_A_PIN)
+            b = GPIO.input(ENC_B_PIN)
+            state = (a << 1) | b
+
+            if state != last_state:
+                key = (last_state << 2) | state
+                direction = trans.get(key, 0)
+
+                now = time.monotonic()
+                if direction != 0 and (now - last_step_t) >= ENC_STEP_RATE_LIMIT_S:
+                    last_step_t = now
+                    try:
+                        if direction > 0:
+                            app_state.on_key_down(display)
+                        else:
+                            app_state.on_key_up(display)
+                    except Exception:
+                        logger.exception("Rotary turn handler failed")
+
+                last_state = state
+
+            # --- button ---
+            btn = GPIO.input(ENC_SW_PIN)
+            now = time.monotonic()
+
+            if btn != btn_last:
+                btn_last = btn
+                btn_last_change_t = now
+
+                # pressed (pulled up -> LOW)
+                if btn == 0:
+                    btn_press_t = now
+                    long_fired = False
+                else:
+                    # released
+                    if btn_press_t is not None:
+                        held = now - btn_press_t
+                        btn_press_t = None
+                        if held >= BTN_DEBOUNCE_S and not long_fired:
+                            # short press
+                            try:
+                                app_state.on_key_a(display)
+                            except Exception:
+                                logger.exception("Rotary short-press handler failed")
+
+            # long press detection while held
+            if btn_last == 0 and btn_press_t is not None and not long_fired:
+                if (now - btn_press_t) >= BTN_LONGPRESS_S:
+                    long_fired = True
+                    try:
+                        app_state.on_key_b(display)
+                    except Exception:
+                        logger.exception("Rotary long-press handler failed")
+
+            time.sleep(ENC_POLL_S)
+
+    threading.Thread(target=worker, daemon=True).start()
+    logger.info("Started rotary encoder thread (A=%s B=%s SW=%s)", ENC_A_PIN, ENC_B_PIN, ENC_SW_PIN)
 
 
 def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, int]:
@@ -438,14 +589,15 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     start = (footer_side_offset, height - footer_height - footer_bottom_offset)
     end = (width - footer_side_offset - 1, height - footer_bottom_offset - 1)
     cursor_x, cursor_y = start
+
     connection_status_color = {
         ConnectionStatus.CONNECTED: state.environment.app_config.accent,
-        ConnectionStatus.DISCONNECTED: state.environment.app_config.accent if state.tick else state.environment.app_config.background
+        ConnectionStatus.DISCONNECTED: state.environment.app_config.accent if state.tick else state.environment.app_config.background,
     }
     device_status_color = {
         DeviceStatus.OPERATIONAL: state.environment.app_config.accent,
         DeviceStatus.NO_DATA: state.environment.app_config.accent if state.tick else state.environment.app_config.background,
-        DeviceStatus.UNAVAILABLE: state.environment.app_config.background
+        DeviceStatus.UNAVAILABLE: state.environment.app_config.background,
     }
 
     draw.rectangle(start + end, fill=state.environment.app_config.accent_dark)
@@ -460,18 +612,16 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     draw.bitmap((cursor_x + icon_padding, cursor_y + gps_status_padding), resources.gps_icon, fill=gps_status_color)
     cursor_x += resources.gps_icon.width + icon_padding
 
-    state_of_charge_str = f'{state.battery_status_provider.get_state_of_charge():.0%}'
+    state_of_charge_str = f"{state.battery_status_provider.get_state_of_charge():.0%}"
     _, _, text_width, text_height = font.getbbox(state_of_charge_str)
     text_padding = (footer_height - text_height) // 2
-    draw.text((cursor_x + icon_padding, cursor_y + text_padding), state_of_charge_str,
-              state.environment.app_config.accent, font=font)
+    draw.text((cursor_x + icon_padding, cursor_y + text_padding), state_of_charge_str, state.environment.app_config.accent, font=font)
     cursor_x += text_width
 
-    date_str = datetime.now(LOCAL_TZ).strftime('%m-%d-%Y %I:%M:%S %p')
+    date_str = datetime.now(LOCAL_TZ).strftime("%m-%d-%Y %I:%M:%S %p")
     _, _, text_width, text_height = font.getbbox(date_str)
     text_padding = (footer_height - text_height) // 2
-    draw.text((width - footer_side_offset - text_padding - text_width, cursor_y + text_padding), date_str,
-              state.environment.app_config.accent, font=font)
+    draw.text((width - footer_side_offset - text_padding - text_width, cursor_y + text_padding), date_str, state.environment.app_config.accent, font=font)
 
     x0, y0 = start
     end = end[0] + 1, end[1] + 1
@@ -503,6 +653,7 @@ def draw_header(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     max_text_width = width - (2 * header_side_offset)
     app_text_width = sum(int(font.getbbox(app.title)[2]) for app in state.apps) + (len(state.apps) - 1) * app_spacing
     cursor = header_side_offset + (max_text_width - app_text_width) // 2
+
     for app in state.apps:
         _, _, text_width, text_height = map(int, font.getbbox(app.title))
         draw.text((cursor, header_top_offset - text_height - app_padding), app.title, color_accent, font=font)
@@ -529,7 +680,7 @@ def draw_base(image: Image.Image, state: AppState) -> Generator[tuple[Image.Imag
     yield draw_footer(image, state)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     injector = Injector([AppModule()])
     app_state = injector.get(AppState)
 
@@ -546,10 +697,12 @@ if __name__ == '__main__':
 
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
+
         udev_service = UDevService()
         udev_service.start()
 
-    if injector.get(Environment).is_raspberry_pi:
+        # Start inputs
+        start_rotary_encoder_thread(app_state, DISPLAY)
         start_mode_selector_thread(app_state, DISPLAY)
 
     DISPLAY.show(app_state.image_buffer, 0, 0)
