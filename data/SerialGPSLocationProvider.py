@@ -6,7 +6,7 @@ from typing import Union
 
 import pynmea2
 import serial
-from pynmea2.types.talker import GGA, RMC, GLL
+from pynmea2.types.talker import GGA, GLL, RMC
 
 from core.data import DeviceStatus
 from core.decorator import override
@@ -19,10 +19,14 @@ class SerialGPSLocationProvider(LocationProvider):
 
     def __init__(self, port: str, baud_rate=9600):
         self.__device = serial.Serial(port, baudrate=baud_rate, timeout=0.5)
-        self.__io_wrapper = io.TextIOWrapper(io.BufferedReader(self.__device), encoding='ascii', errors='ignore')
+        self.__io_wrapper = io.TextIOWrapper(
+            io.BufferedReader(self.__device),
+            encoding='ascii',
+            errors='ignore'
+        )
         self.__location: Union[Location, None] = None
         self.__device_status = DeviceStatus.UNAVAILABLE
-        self.__thread = threading.Thread(target=self.__update_location, args=(), daemon=True)
+        self.__thread = threading.Thread(target=self.__update_location, daemon=True)
         self.__thread.start()
 
     def __set_location(self, latitude: float, longitude: float):
@@ -37,30 +41,30 @@ class SerialGPSLocationProvider(LocationProvider):
         while True:
             try:
                 data = self.__io_wrapper.readline().strip()
-                if len(data) == 0:
+
+                if not data:
                     self.__device_status = DeviceStatus.UNAVAILABLE
                     continue
 
                 logger.debug(data)
 
-                # Parse all valid NMEA sentences
+                if not data.startswith('$GP') and not data.startswith('$GN'):
+                    continue
+
                 message = pynmea2.parse(data)
 
-                # GLL: Geographic Position - Latitude/Longitude
                 if isinstance(message, GLL):
                     if message.lat and message.lon:
                         self.__set_location(message.latitude, message.longitude)
                     else:
                         self.__clear_location()
 
-                # GGA: Fix data
                 elif isinstance(message, GGA):
                     if message.lat and message.lon and str(message.gps_qual) != '0':
                         self.__set_location(message.latitude, message.longitude)
                     else:
                         self.__clear_location()
 
-                # RMC: Recommended minimum navigation info
                 elif isinstance(message, RMC):
                     if message.lat and message.lon and message.status == 'A':
                         self.__set_location(message.latitude, message.longitude)
