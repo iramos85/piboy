@@ -30,6 +30,9 @@ class RadioApp(SelfUpdatingApp):
     __META_INFO_HEIGHT = 20
     __VOLUME_STEP = 10
 
+    MODE_TRACK = 'TRACK'
+    MODE_CONTROL = 'CTRL'
+
     @dataclass
     class Track:
         path: str
@@ -74,8 +77,10 @@ class RadioApp(SelfUpdatingApp):
             @classmethod
             def from_state(cls, is_focused: bool, is_selected: bool) -> 'RadioApp.Control.SelectionState':
                 values = [cls.NONE, cls.FOCUSED]
-                return [state for state in values
-                        if state.is_focused == is_focused and state.is_selected == is_selected][0]
+                return [
+                    state for state in values
+                    if state.is_focused == is_focused and state.is_selected == is_selected
+                ][0]
 
             @property
             def is_focused(self) -> bool:
@@ -165,9 +170,11 @@ class RadioApp(SelfUpdatingApp):
         def on_deselect(self):
             self._is_switched = False
 
+        def set_switched(self, value: bool):
+            self._is_switched = value
+
         def reset(self):
             self.on_blur()
-            self.on_deselect()
 
         def draw(self, draw: ImageDraw.ImageDraw, left_top: tuple[int, int]):
             width, height = self._icon_bitmap.size
@@ -377,8 +384,9 @@ class RadioApp(SelfUpdatingApp):
         self.__playlist: list[int] = []
         self.__playing_index = 0
         self.__is_random = False
-        self.__source_name = 'Empty'
+        self.__source_name = 'Radio'
         self.__status_text = 'Ready'
+        self.__mode = self.MODE_TRACK
 
         self.__reload_library()
 
@@ -408,6 +416,11 @@ class RadioApp(SelfUpdatingApp):
             self.InstantControl(resources.volume_increase_icon, self.increase_volume_action)
         ]
         self.__selected_control_index = 2
+        self.__sync_control_visuals()
+
+    @property
+    def is_control_mode(self) -> bool:
+        return self.__mode == self.MODE_CONTROL
 
     @staticmethod
     def __sanitize_title(file_name: str) -> str:
@@ -501,7 +514,7 @@ class RadioApp(SelfUpdatingApp):
         if self.__default_playlist.is_file():
             loaded_tracks = self.__load_tracks_from_playlist(self.__default_playlist)
             if loaded_tracks:
-                self.__source_name = self.__default_playlist.stem
+                self.__source_name = 'New Vegas Radio'
                 self.__status_text = 'Playlist loaded'
             else:
                 self.__status_text = 'Playlist empty'
@@ -535,6 +548,29 @@ class RadioApp(SelfUpdatingApp):
             return None
         return self.__tracks[self.__selected_index]
 
+    def __sync_control_visuals(self):
+        # Keep play/pause icon in sync with actual playback state
+        play_control = self.__controls[2]
+        if isinstance(play_control, self.SwitchControl):
+            play_control.set_switched(self.__player.is_active and not self.__player.is_paused)
+
+    def __enter_track_mode(self):
+        self.__mode = self.MODE_TRACK
+        for control in self.__controls:
+            control.on_blur()
+        self.__status_text = 'Track mode'
+        self.__sync_control_visuals()
+
+    def __enter_control_mode(self):
+        self.__mode = self.MODE_CONTROL
+        for i, control in enumerate(self.__controls):
+            if i == self.__selected_control_index:
+                control.on_focus()
+            else:
+                control.on_blur()
+        self.__status_text = 'Control mode'
+        self.__sync_control_visuals()
+
     def play_action(self) -> bool:
         if len(self.__playlist) == 0:
             self.__status_text = 'No tracks'
@@ -560,16 +596,19 @@ class RadioApp(SelfUpdatingApp):
 
         started = self.__player.start_stream()
         self.__status_text = 'Playing' if started else 'Play failed'
+        self.__sync_control_visuals()
         return started
 
     def pause_action(self) -> bool:
         ok = self.__player.pause_stream()
         self.__status_text = 'Paused' if ok else 'Pause failed'
+        self.__sync_control_visuals()
         return ok
 
     def stop_action(self):
         self.__player.stop_stream()
         self.__status_text = 'Stopped'
+        self.__sync_control_visuals()
 
     def prev_action(self):
         if len(self.__playlist) == 0:
@@ -608,6 +647,7 @@ class RadioApp(SelfUpdatingApp):
             self.__playing_index = 0
 
         self.__status_text = 'Shuffle on'
+        self.__sync_control_visuals()
         return True
 
     def order_action(self) -> bool:
@@ -618,6 +658,7 @@ class RadioApp(SelfUpdatingApp):
         else:
             self.__playing_index = 0
         self.__status_text = 'Shuffle off'
+        self.__sync_control_visuals()
         return True
 
     def decrease_volume_action(self):
@@ -657,6 +698,7 @@ class RadioApp(SelfUpdatingApp):
             self.__player.load_file(track.path)
             self.__player.start_stream()
             self.__status_text = 'Playing'
+            self.__sync_control_visuals()
 
     def __self_update(self):
         self.__draw_callback(**self.__draw_callback_kwargs)
@@ -691,8 +733,15 @@ class RadioApp(SelfUpdatingApp):
             width // 2 - controls_total_width // 2,
             height - max_control_height - self.__CONTROL_BOTTOM_OFFSET
         )
-        for control in self.__controls:
+        for i, control in enumerate(self.__controls):
             c_width, c_height = control.size
+            if self.__mode == self.MODE_CONTROL:
+                if i == self.__selected_control_index:
+                    control.on_focus()
+                else:
+                    control.on_blur()
+            else:
+                control.on_blur()
             control.draw(draw, (cursor[0], cursor[1] + (max_control_height - c_height) // 2))
             cursor = (cursor[0] + c_width + self.__CONTROL_PADDING, cursor[1])
         vertical_limit = cursor[1]
@@ -713,7 +762,7 @@ class RadioApp(SelfUpdatingApp):
             status = 'Paused'
         elif self.__player.is_active:
             status = 'Playing'
-        text = self.__fit_text(f'{self.__source_name} | {status}', width)
+        text = self.__fit_text(f'{self.__source_name} | {self.__mode} | {status}', width)
         _, _, t_width, t_height = self.__font.getbbox(text)
         draw.text(
             (width // 2 - t_width // 2, vertical_limit - self.__META_INFO_HEIGHT // 2 - t_height // 2),
@@ -754,7 +803,7 @@ class RadioApp(SelfUpdatingApp):
         cursor = left_top
         for index, track in enumerate(self.__tracks[self.__top_index:]):
             index += self.__top_index
-            if self.__selected_index == index:
+            if self.__selected_index == index and self.__mode == self.MODE_TRACK:
                 draw.rectangle(cursor + (right, cursor[1] + self.__LINE_HEIGHT), self.__color_dark)
             if index == max_entries + self.__top_index:
                 draw.text(cursor, '...', self.__color, font=self.__font)
@@ -820,34 +869,50 @@ class RadioApp(SelfUpdatingApp):
 
     @override
     def on_key_left(self):
-        self.__controls[self.__selected_control_index].on_blur()
+        if self.__mode != self.MODE_CONTROL:
+            return
         self.__selected_control_index = max(self.__selected_control_index - 1, 0)
-        self.__controls[self.__selected_control_index].on_focus()
+        self.__sync_control_visuals()
 
     @override
     def on_key_right(self):
-        self.__controls[self.__selected_control_index].on_blur()
+        if self.__mode != self.MODE_CONTROL:
+            return
         self.__selected_control_index = min(self.__selected_control_index + 1, len(self.__controls) - 1)
-        self.__controls[self.__selected_control_index].on_focus()
+        self.__sync_control_visuals()
 
     @override
     def on_key_up(self):
+        if self.__mode != self.MODE_TRACK:
+            return
         self.__selected_index = max(self.__selected_index - 1, 0)
 
     @override
     def on_key_down(self):
+        if self.__mode != self.MODE_TRACK:
+            return
         self.__selected_index = min(self.__selected_index + 1, len(self.__tracks) - 1)
 
     @override
     def on_key_a(self):
-        # Default action: play highlighted track
-        self.play_action()
+        if self.__mode == self.MODE_TRACK:
+            self.play_action()
+        else:
+            self.__controls[self.__selected_control_index].on_select()
+            self.__sync_control_visuals()
+
+    @override
+    def on_key_b(self):
+        if self.__mode == self.MODE_TRACK:
+            self.__enter_control_mode()
+        else:
+            self.__enter_track_mode()
 
     @override
     def on_app_enter(self):
         super().on_app_enter()
         self.__reload_library()
-        self.__controls[self.__selected_control_index].on_focus()
+        self.__enter_track_mode()
 
     @override
     def on_app_leave(self):

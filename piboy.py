@@ -55,9 +55,9 @@ ENC_B_PIN = 27
 ENC_SW_PIN = 22
 
 # Encoder behavior tuning
-ENC_POLL_S = 0.005             # slower poll reduces bounce/multi-step
-ENC_STEP_RATE_LIMIT_S = 0.100  # accept at most one step every 100ms
-BTN_DEBOUNCE_S = 0.060
+ENC_POLL_S = 0.008
+ENC_STEP_RATE_LIMIT_S = 0.140
+BTN_DEBOUNCE_S = 0.080
 BTN_LONGPRESS_S = 0.70
 
 
@@ -500,12 +500,19 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
                 if direction != 0 and (now - last_step_t) >= ENC_STEP_RATE_LIMIT_S:
                     last_step_t = now
                     try:
-                        # RADIO uses left/right selection; other apps use up/down
-                        if isinstance(app_state.active_app, RadioApp):
-                            if direction > 0:
-                                app_state.on_key_right(display)
+                        active_app = app_state.active_app
+
+                        if isinstance(active_app, RadioApp):
+                            if getattr(active_app, "is_control_mode", False):
+                                if direction > 0:
+                                    app_state.on_key_right(display)
+                                else:
+                                    app_state.on_key_left(display)
                             else:
-                                app_state.on_key_left(display)
+                                if direction > 0:
+                                    app_state.on_key_down(display)
+                                else:
+                                    app_state.on_key_up(display)
                         else:
                             if direction > 0:
                                 app_state.on_key_down(display)
