@@ -11,6 +11,7 @@ from environment import AppConfig
 
 
 class EnvironmentApp(SelfUpdatingApp):
+    __TEMP_OFFSET_C = -11.25  # approx. -20.25°F based on current chassis-vs-room calibration
 
     @inject
     def __init__(self, draw_callback: Callable[[bool], None],
@@ -72,8 +73,11 @@ class EnvironmentApp(SelfUpdatingApp):
                                   pressure_xy[1] + self.__p_icon.height,
                                   humidity_xy[1] + self.__h_icon.height))
 
-        # format values (temperature shown in Fahrenheit)
-        t_text = f'{self.__c_to_f(self.__data.temperature):.2f} °F' if self.__data is not None else '? °F'
+        # format values
+        t_text = (
+            f'{self.__c_to_f(self.__data.temperature + self.__TEMP_OFFSET_C):.2f} °F'
+            if self.__data is not None else '? °F'
+        )
         p_text = f'{self.__data.pressure:.2f} hPa' if self.__data is not None else '? hPa'
         h_text = f'{self.__data.humidity:.2f}%' if self.__data is not None else '?%'
         _, _, t_text_width, t_text_height = self.__font.getbbox(t_text)
