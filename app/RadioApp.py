@@ -9,7 +9,7 @@ import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
-from subprocess import DEVNULL, PIPE, CompletedProcess, Popen, run
+from subprocess import DEVNULL, PIPE, Popen, run
 from typing import Any, Callable, Generator, Optional
 
 from injector import inject
@@ -39,7 +39,7 @@ class RadioApp(SelfUpdatingApp):
 
         @property
         def display_name(self) -> str:
-            if self.artist and self.title:
+            if self.artist and self.artist != 'Unknown Artist':
                 return f'{self.artist} - {self.title}'
             return self.title or os.path.basename(self.path)
 
@@ -197,10 +197,6 @@ class RadioApp(SelfUpdatingApp):
             self._on_select()
 
     class AudioPlayer:
-        """
-        mpv-backed audio player with simple IPC for pause/unpause/quit.
-        """
-
         def __init__(self, callback_next: Callable[[], None]):
             self.__callback_next = callback_next
             self.__process: Optional[Popen] = None
@@ -272,27 +268,41 @@ class RadioApp(SelfUpdatingApp):
             self.__remove_ipc_socket()
             self.__stop_requested = False
 
-            cmd = [
-                'mpv',
-                '--no-video',
-                '--really-quiet',
-                '--no-terminal',
-                f'--input-ipc-server={self.__ipc_path}',
-                self.__current_file
+            commands = [
+                [
+                    'mpv',
+                    '--no-video',
+                    '--really-quiet',
+                    '--no-terminal',
+                    '--ao=alsa',
+                    '--audio-device=alsa/plughw:CARD=MAX98357A,DEV=0',
+                    f'--input-ipc-server={self.__ipc_path}',
+                    self.__current_file
+                ],
+                [
+                    'mpv',
+                    '--no-video',
+                    '--really-quiet',
+                    '--no-terminal',
+                    f'--input-ipc-server={self.__ipc_path}',
+                    self.__current_file
+                ]
             ]
 
-            try:
-                self.__process = Popen(cmd, stdout=DEVNULL, stderr=DEVNULL)
-                self.__is_continuing = True
-                self.__paused = False
-                self.__start_watch_thread()
-                return True
-            except Exception as ex:
-                logger.error('Error starting mpv: %s', ex)
-                self.__process = None
-                self.__paused = False
-                self.__remove_ipc_socket()
-                return False
+            for cmd in commands:
+                try:
+                    self.__process = Popen(cmd, stdout=DEVNULL, stderr=DEVNULL)
+                    self.__is_continuing = True
+                    self.__paused = False
+                    self.__start_watch_thread()
+                    return True
+                except Exception as ex:
+                    logger.error('Error starting mpv: %s', ex)
+                    self.__process = None
+                    self.__paused = False
+                    self.__remove_ipc_socket()
+
+            return False
 
         def pause_stream(self) -> bool:
             if not self.is_active:
@@ -422,7 +432,14 @@ class RadioApp(SelfUpdatingApp):
         try:
             rel = resolved.relative_to(self.__music_directory.resolve())
             parts = rel.parts
-            if len(parts) >= 3:
+
+            # Handles:
+            # media/Music/Artist/<artist>/<album>/<song>
+            # media/Music/<artist>/<album>/<song>
+            if len(parts) >= 4 and parts[0].lower() == 'artist':
+                artist = parts[1]
+                album = parts[2]
+            elif len(parts) >= 3:
                 artist = parts[0]
                 album = parts[1]
         except Exception:
@@ -488,6 +505,7 @@ class RadioApp(SelfUpdatingApp):
                 self.__status_text = 'Playlist loaded'
             else:
                 self.__status_text = 'Playlist empty'
+
         if not loaded_tracks:
             loaded_tracks = self.__load_tracks_from_music()
             self.__source_name = 'All Music'
@@ -541,7 +559,7 @@ class RadioApp(SelfUpdatingApp):
         self.__player.load_file(track.path)
 
         started = self.__player.start_stream()
-        self.__status_text = 'Playing' if started else 'mpv missing?'
+        self.__status_text = 'Playing' if started else 'Play failed'
         return started
 
     def pause_action(self) -> bool:
@@ -822,20 +840,14 @@ class RadioApp(SelfUpdatingApp):
 
     @override
     def on_key_a(self):
-        self.__controls[self.__selected_control_index].on_select()
+        # Default action: play highlighted track
+        self.play_action()
 
     @override
     def on_app_enter(self):
         super().on_app_enter()
         self.__reload_library()
         self.__controls[self.__selected_control_index].on_focus()
-
-        if len(self.__tracks) > 0:
-            try:
-                if not self.__player.is_active:
-                    self.play_action()
-            except Exception as ex:
-                logger.warning("RAD autoplay failed: %s", ex)
 
     @override
     def on_app_leave(self):
