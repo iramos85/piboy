@@ -75,7 +75,7 @@ class EnvironmentApp(SelfUpdatingApp):
         # format values (temperature shown in Fahrenheit)
         t_text = f'{self.__c_to_f(self.__data.temperature):.2f} °F' if self.__data is not None else '? °F'
         p_text = f'{self.__data.pressure:.2f} hPa' if self.__data is not None else '? hPa'
-        h_text = f'{self.__data.humidity:.2%}' if self.__data is not None else '?%'
+        h_text = f'{self.__data.humidity:.2f}%' if self.__data is not None else '?%'
         _, _, t_text_width, t_text_height = self.__font.getbbox(t_text)
         _, _, p_text_width, p_text_height = self.__font.getbbox(p_text)
         _, _, h_text_width, h_text_height = self.__font.getbbox(h_text)
