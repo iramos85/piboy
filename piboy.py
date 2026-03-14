@@ -32,6 +32,7 @@ from environment import AppConfig, Environment
 from interaction.Display import Display
 from interaction.Input import Input
 from interaction.UnifiedInteraction import UnifiedInteraction
+from status_led import StatusLed
 
 fileConfig(fname="config.ini")
 logger = logging.getLogger(__name__)
@@ -41,6 +42,10 @@ LOCAL_TZ = ZoneInfo("America/Chicago")
 
 # UI sound settings
 TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
+
+# Status LED
+STATUS_LED_PIN = 16
+LOW_BATTERY_THRESHOLD = 0.20
 
 # -----------------------------------------
 # Rotary encoder pins (Adafruit #377)
@@ -182,10 +187,53 @@ class AppState:
         play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
-    def watch_function(self, display: Display):
+    def get_status_led_mode(self) -> str:
+        """
+        Priority:
+          1. sensor/data error -> triple flash
+          2. low battery      -> fast blink
+          3. no GPS data      -> slow blink
+          4. healthy          -> solid on
+        """
+        try:
+            env_status = self.environment_data_provider.get_device_status()
+        except Exception:
+            logger.exception("Failed reading environment device status for status LED")
+            return StatusLed.TRIPLE_FLASH
+
+        if env_status in (DeviceStatus.NO_DATA, DeviceStatus.UNAVAILABLE):
+            return StatusLed.TRIPLE_FLASH
+
+        try:
+            battery_soc = self.battery_status_provider.get_state_of_charge()
+        except Exception:
+            logger.exception("Failed reading battery state of charge for status LED")
+            return StatusLed.TRIPLE_FLASH
+
+        if battery_soc <= LOW_BATTERY_THRESHOLD:
+            return StatusLed.FAST_BLINK
+
+        try:
+            gps_status = self.location_provider.get_device_status()
+        except Exception:
+            logger.exception("Failed reading GPS device status for status LED")
+            return StatusLed.TRIPLE_FLASH
+
+        if gps_status in (DeviceStatus.NO_DATA, DeviceStatus.UNAVAILABLE):
+            return StatusLed.SLOW_BLINK
+
+        return StatusLed.ON
+
+    def watch_function(self, display: Display, status_led: StatusLed | None = None):
         while True:
             now = datetime.now(LOCAL_TZ)
             time.sleep(1.0 - now.microsecond / 1_000_000.0)
+
+            if status_led is not None:
+                try:
+                    status_led.set_mode(self.get_status_led_mode())
+                except Exception:
+                    logger.exception("Failed updating status LED mode")
 
             image, x0, y0 = draw_footer(self.image_buffer, self)
             display.show(image, x0, y0)
@@ -675,6 +723,8 @@ if __name__ == "__main__":
     DISPLAY = injector.get(Display)
     INPUT = injector.get(Input)
 
+    status_led = None
+
     app_state.add_app(injector.get(FileManagerApp)) \
         .add_app(injector.get(UpdateApp)) \
         .add_app(injector.get(EnvironmentApp)) \
@@ -685,6 +735,10 @@ if __name__ == "__main__":
 
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
+
+        status_led = StatusLed(pin=STATUS_LED_PIN)
+        status_led.start()
+        status_led.slow_blink()
 
         udev_service = UDevService()
         udev_service.start()
@@ -697,10 +751,20 @@ if __name__ == "__main__":
     app_state.update_display(DISPLAY)
     app_state.active_app.on_app_enter()
 
+    if status_led is not None:
+        try:
+            status_led.set_mode(app_state.get_status_led_mode())
+        except Exception:
+            logger.exception("Failed setting initial status LED mode")
+            status_led.triple_flash()
+
     try:
-        app_state.watch_function(DISPLAY)
+        app_state.watch_function(DISPLAY, status_led=status_led)
     except KeyboardInterrupt:
         pass
     finally:
+        if status_led is not None:
+            status_led.off()
+            status_led.cleanup()
         DISPLAY.close()
         INPUT.close()
