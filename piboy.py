@@ -47,12 +47,12 @@ TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
 STATUS_LED_PIN = 16
 LOW_BATTERY_THRESHOLD = 0.20
 
-# CRT Stage 1 effects
+# CRT Stage 1 effects (stronger so they are actually visible on the TFT)
 CRT_ENABLED = True
 CRT_SCANLINE_SPACING = 2
-CRT_SCANLINE_ALPHA_EVEN = 26
-CRT_SCANLINE_ALPHA_ODD = 14
-CRT_FLICKER_STRENGTH = 0.035
+CRT_SCANLINE_ALPHA_EVEN = 80
+CRT_SCANLINE_ALPHA_ODD = 40
+CRT_FLICKER_STRENGTH = 0.12
 
 # -----------------------------------------
 # Rotary encoder pins (Adafruit #377)
@@ -100,8 +100,8 @@ def play_tab_switch_sfx():
 def apply_crt_stage1(image: Image.Image, tick: int, y_offset: int = 0) -> Image.Image:
     """
     Lightweight CRT effect:
-      - subtle horizontal scanlines
-      - very slight flicker
+      - visible horizontal scanlines
+      - stronger alternating flicker
 
     y_offset keeps scanlines aligned across partial updates.
     """
@@ -123,10 +123,13 @@ def apply_crt_stage1(image: Image.Image, tick: int, y_offset: int = 0) -> Image.
 
     base = Image.alpha_composite(base, overlay).convert("RGB")
 
-    # subtle flicker
-    flicker_amount = 1.0 - CRT_FLICKER_STRENGTH if tick else 1.0
-    base = ImageEnhance.Brightness(base).enhance(flicker_amount)
+    # more obvious flicker
+    if tick:
+        flicker_amount = 1.0 - CRT_FLICKER_STRENGTH
+    else:
+        flicker_amount = 1.0 + (CRT_FLICKER_STRENGTH * 0.35)
 
+    base = ImageEnhance.Brightness(base).enhance(flicker_amount)
     return base
 
 
