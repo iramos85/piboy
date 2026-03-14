@@ -9,7 +9,7 @@ from typing import Any, Callable, Generator, Self
 from zoneinfo import ZoneInfo
 
 from injector import Injector, Module, provider, singleton
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageEnhance
 
 import environment
 from app.App import App
@@ -46,6 +46,13 @@ TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
 # Status LED
 STATUS_LED_PIN = 16
 LOW_BATTERY_THRESHOLD = 0.20
+
+# CRT Stage 1 effects
+CRT_ENABLED = True
+CRT_SCANLINE_SPACING = 2
+CRT_SCANLINE_ALPHA_EVEN = 26
+CRT_SCANLINE_ALPHA_ODD = 14
+CRT_FLICKER_STRENGTH = 0.035
 
 # -----------------------------------------
 # Rotary encoder pins (Adafruit #377)
@@ -88,6 +95,39 @@ def play_tab_switch_sfx():
                 continue
 
     threading.Thread(target=_worker, daemon=True).start()
+
+
+def apply_crt_stage1(image: Image.Image, tick: int, y_offset: int = 0) -> Image.Image:
+    """
+    Lightweight CRT effect:
+      - subtle horizontal scanlines
+      - very slight flicker
+
+    y_offset keeps scanlines aligned across partial updates.
+    """
+    if not CRT_ENABLED:
+        return image
+
+    base = image.convert("RGBA")
+    width, height = base.size
+
+    # scanlines overlay
+    overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+
+    for y in range(height):
+        global_y = y + y_offset
+        if global_y % CRT_SCANLINE_SPACING == 0:
+            alpha = CRT_SCANLINE_ALPHA_EVEN if (global_y // CRT_SCANLINE_SPACING) % 2 == 0 else CRT_SCANLINE_ALPHA_ODD
+            draw.line((0, y, width, y), fill=(0, 0, 0, alpha))
+
+    base = Image.alpha_composite(base, overlay).convert("RGB")
+
+    # subtle flicker
+    flicker_amount = 1.0 - CRT_FLICKER_STRENGTH if tick else 1.0
+    base = ImageEnhance.Brightness(base).enhance(flicker_amount)
+
+    return base
 
 
 class AppState:
@@ -236,6 +276,7 @@ class AppState:
                     logger.exception("Failed updating status LED mode")
 
             image, x0, y0 = draw_footer(self.image_buffer, self)
+            image = apply_crt_stage1(image, self.tick, y_offset=y0)
             display.show(image, x0, y0)
             self.__tick()
 
@@ -248,15 +289,23 @@ class AppState:
             self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
         )
         x_offset, y_offset = app_bbox[0:2]
+
         if partial:
             for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                patch = apply_crt_stage1(patch, self.tick, y_offset=y0 + y_offset)
                 display.show(patch, x0 + x_offset, y0 + y_offset)
         else:
             for patch, x0, y0 in draw_base(image, self):
+                patch = apply_crt_stage1(patch, self.tick, y_offset=y0)
                 display.show(patch, x0, y0)
+
             for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                patch = apply_crt_stage1(patch, self.tick, y_offset=y0 + y_offset)
                 image.paste(patch, (x0 + x_offset, y0 + y_offset))
-            display.show(image.crop(app_bbox), x_offset, y_offset)
+
+            final_crop = image.crop(app_bbox)
+            final_crop = apply_crt_stage1(final_crop, self.tick, y_offset=y_offset)
+            display.show(final_crop, x_offset, y_offset)
 
     def on_key_left(self, display: Display):
         self.active_app.on_key_left()
