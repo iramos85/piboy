@@ -14,10 +14,10 @@ from PIL import Image, ImageDraw, ImageEnhance
 import environment
 from app.App import App
 from app.ClockApp import ClockApp
-from app.DebugApp import DebugApp
 from app.EnvironmentApp import EnvironmentApp
 from app.FileManagerApp import FileManagerApp
 from app.MapApp import MapApp
+from app.NullApp import NullApp
 from app.RadioApp import RadioApp
 from app.UpdateApp import UpdateApp
 from core import resources
@@ -111,7 +111,6 @@ def apply_crt_stage1(image: Image.Image, tick: int, y_offset: int = 0) -> Image.
     base = image.convert("RGBA")
     width, height = base.size
 
-    # scanlines overlay
     overlay = Image.new("RGBA", (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(overlay)
 
@@ -123,7 +122,6 @@ def apply_crt_stage1(image: Image.Image, tick: int, y_offset: int = 0) -> Image.
 
     base = Image.alpha_composite(base, overlay).convert("RGB")
 
-    # more obvious flicker
     if tick:
         flicker_amount = 1.0 - CRT_FLICKER_STRENGTH
     else:
@@ -218,7 +216,6 @@ class AppState:
             self.__active_app = len(self.__apps) - 1
 
     def set_active_app_index(self, index: int, display: Display):
-        """Directly select an app by index (used by the rotary selector switch)."""
         if index < 0 or index >= len(self.__apps):
             return
         if index == self.__active_app:
@@ -231,13 +228,6 @@ class AppState:
         self.update_display(display, partial=False)
 
     def get_status_led_mode(self) -> str:
-        """
-        Priority:
-          1. sensor/data error -> triple flash
-          2. low battery      -> fast blink
-          3. no GPS data      -> slow blink
-          4. healthy          -> solid on
-        """
         try:
             env_status = self.environment_data_provider.get_device_status()
         except Exception:
@@ -473,10 +463,6 @@ class AppModule(Module):
     @singleton
     @provider
     def provide_input(self, e: Environment, state: AppState, display: Display) -> Input:
-        """
-        IMPORTANT: We intentionally do NOT use GPIOInput anymore.
-        All navigation is driven by the rotary encoder thread.
-        """
         if e.is_raspberry_pi:
             class RotaryOnlyInput(Input):
                 def close(self) -> None:
@@ -514,9 +500,9 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         6: 1,    # SYS
         12: 2,   # ENV
         13: 3,   # RAD
-        25: 4,   # DBG
         20: 5,   # CLK
         26: 6,   # MAP
+        25: 4,   # DBG
     }
 
     for pin in mode_pins:
@@ -573,7 +559,7 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
     last_step_t = 0.0
 
     btn_last = GPIO.input(ENC_SW_PIN)
-    btn_press_t = None  # type: float | None
+    btn_press_t = None
     long_fired = False
 
     trans = {
@@ -784,7 +770,7 @@ if __name__ == "__main__":
         .add_app(injector.get(UpdateApp)) \
         .add_app(injector.get(EnvironmentApp)) \
         .add_app(injector.get(RadioApp)) \
-        .add_app(injector.get(DebugApp)) \
+        .add_app(NullApp("DBG")) \
         .add_app(injector.get(ClockApp)) \
         .add_app(injector.get(MapApp))
 
@@ -798,7 +784,6 @@ if __name__ == "__main__":
         udev_service = UDevService()
         udev_service.start()
 
-        # Start inputs
         start_rotary_encoder_thread(app_state, DISPLAY)
         start_mode_selector_thread(app_state, DISPLAY)
 
