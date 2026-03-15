@@ -514,9 +514,9 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         6: 1,    # SYS
         12: 2,   # ENV
         13: 3,   # RAD
-        25: 4,   # NEW APP 1 / replaces DBG
-        26: 5,   # NEW APP 2 / replaces CLK
-        20: 6,   # MAP
+        25: 4,   # DBG
+        20: 5,   # CLK
+        26: 6,   # MAP
     }
 
     for pin in mode_pins:
