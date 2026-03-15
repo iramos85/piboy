@@ -510,11 +510,13 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     GPIO.setwarnings(False)
 
     mode_pins = {
-        5: 0,   # INV
-        6: 1,   # SYS
-        12: 2,  # ENV
-        13: 3,  # RAD
-        20: 6,  # MAP (moved from GPIO19 to GPIO20)
+        5: 0,    # INV
+        6: 1,    # SYS
+        12: 2,   # ENV
+        13: 3,   # RAD
+        25: 4,   # NEW APP 1 / replaces DBG
+        26: 5,   # NEW APP 2 / replaces CLK
+        20: 6,   # MAP
     }
 
     for pin in mode_pins:
@@ -542,6 +544,7 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
 
             if stable_count >= 3 and idx is not None and idx != last_index:
                 try:
+                    logger.info("Mode selector switching to app index %s", idx)
                     app_state.set_active_app_index(idx, display)
                     last_index = idx
                 except Exception:
