@@ -13,8 +13,6 @@ from PIL import Image, ImageDraw
 
 import environment
 from app.App import App
-from app.ClockApp import ClockApp
-from app.DebugApp import DebugApp
 from app.EnvironmentApp import EnvironmentApp
 from app.FileManagerApp import FileManagerApp
 from app.MapApp import MapApp
@@ -257,7 +255,6 @@ class AppState:
                 except Exception:
                     logger.exception("Failed updating status LED mode")
 
-            # Do not push footer refreshes while a full app switch is in progress
             if self.__switching_app:
                 self.__tick()
                 continue
@@ -550,11 +547,11 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     GPIO.setwarnings(False)
 
     mode_pins = {
-        5: 0,
-        6: 1,
-        12: 2,
-        13: 3,
-        20: 6,
+        5: 0,   # INV
+        6: 1,   # SYS
+        12: 2,  # ENV
+        13: 3,  # RAD
+        20: 4,  # MAP
     }
 
     for pin in mode_pins:
@@ -811,8 +808,6 @@ if __name__ == "__main__":
         .add_app(injector.get(UpdateApp)) \
         .add_app(injector.get(EnvironmentApp)) \
         .add_app(injector.get(RadioApp)) \
-        .add_app(injector.get(DebugApp)) \
-        .add_app(injector.get(ClockApp)) \
         .add_app(injector.get(MapApp))
 
     if injector.get(Environment).is_raspberry_pi:
