@@ -177,15 +177,45 @@ class AppState:
     def set_active_app_index(self, index: int, display: Display):
         """Directly select an app by index (used by the rotary selector switch)."""
         if index < 0 or index >= len(self.__apps):
+            logger.warning("Rejected app index %s (out of range)", index)
             return
         if index == self.__active_app:
             return
 
-        self.active_app.on_app_leave()
+        previous_index = self.__active_app
+        previous_title = self.__apps[previous_index].title
+        next_title = self.__apps[index].title
+
+        logger.info(
+            "Switching app by selector: %s (%s) -> %s (%s)",
+            previous_index,
+            previous_title,
+            index,
+            next_title,
+        )
+
+        try:
+            self.active_app.on_app_leave()
+        except Exception:
+            logger.exception("on_app_leave failed for %s", previous_title)
+
         self.__active_app = index
-        self.active_app.on_app_enter()
-        play_tab_switch_sfx()
-        self.update_display(display, partial=False)
+
+        try:
+            logger.info("Entering app: %s", self.active_app.title)
+            self.active_app.on_app_enter()
+            play_tab_switch_sfx()
+            logger.info("Updating display for app: %s", self.active_app.title)
+            self.update_display(display, partial=False)
+            logger.info("Finished app switch to: %s", self.active_app.title)
+        except Exception:
+            logger.exception("App switch failed for %s; reverting to %s", next_title, previous_title)
+            self.__active_app = previous_index
+            try:
+                self.active_app.on_app_enter()
+                self.update_display(display, partial=False)
+            except Exception:
+                logger.exception("Failed to recover previous app: %s", previous_title)
 
     def get_status_led_mode(self) -> str:
         """
@@ -240,6 +270,8 @@ class AppState:
             self.__tick()
 
     def update_display(self, display: Display, partial=False):
+        logger.info("update_display start: app=%s partial=%s", self.active_app.title, partial)
+
         image = self.clear_buffer()
         app_bbox = (
             self.__environment.app_config.app_side_offset,
@@ -248,15 +280,22 @@ class AppState:
             self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
         )
         x_offset, y_offset = app_bbox[0:2]
-        if partial:
-            for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                display.show(patch, x0 + x_offset, y0 + y_offset)
-        else:
-            for patch, x0, y0 in draw_base(image, self):
-                display.show(patch, x0, y0)
-            for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                image.paste(patch, (x0 + x_offset, y0 + y_offset))
-            display.show(image.crop(app_bbox), x_offset, y_offset)
+
+        try:
+            if partial:
+                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                    display.show(patch, x0 + x_offset, y0 + y_offset)
+            else:
+                for patch, x0, y0 in draw_base(image, self):
+                    display.show(patch, x0, y0)
+                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                    image.paste(patch, (x0 + x_offset, y0 + y_offset))
+                display.show(image.crop(app_bbox), x_offset, y_offset)
+
+            logger.info("update_display complete: app=%s partial=%s", self.active_app.title, partial)
+        except Exception:
+            logger.exception("update_display failed: app=%s partial=%s", self.active_app.title, partial)
+            raise
 
     def on_key_left(self, display: Display):
         self.active_app.on_key_left()
@@ -283,18 +322,56 @@ class AppState:
         self.update_display(display, partial=True)
 
     def on_rotary_increase(self, display: Display):
-        self.active_app.on_app_leave()
+        previous_index = self.__active_app
+        previous_title = self.active_app.title
+
+        try:
+            self.active_app.on_app_leave()
+        except Exception:
+            logger.exception("on_app_leave failed for %s", previous_title)
+
         self.next_app()
-        self.active_app.on_app_enter()
-        play_tab_switch_sfx()
-        self.update_display(display, partial=False)
+        logger.info("Rotary increase: %s -> %s", previous_title, self.active_app.title)
+
+        try:
+            self.active_app.on_app_enter()
+            play_tab_switch_sfx()
+            self.update_display(display, partial=False)
+            logger.info("Rotary increase complete: now on %s", self.active_app.title)
+        except Exception:
+            logger.exception("Rotary increase failed on app %s", self.active_app.title)
+            self.__active_app = previous_index
+            try:
+                self.active_app.on_app_enter()
+                self.update_display(display, partial=False)
+            except Exception:
+                logger.exception("Failed to recover previous app after rotary increase")
 
     def on_rotary_decrease(self, display: Display):
-        self.active_app.on_app_leave()
+        previous_index = self.__active_app
+        previous_title = self.active_app.title
+
+        try:
+            self.active_app.on_app_leave()
+        except Exception:
+            logger.exception("on_app_leave failed for %s", previous_title)
+
         self.previous_app()
-        self.active_app.on_app_enter()
-        play_tab_switch_sfx()
-        self.update_display(display, partial=False)
+        logger.info("Rotary decrease: %s -> %s", previous_title, self.active_app.title)
+
+        try:
+            self.active_app.on_app_enter()
+            play_tab_switch_sfx()
+            self.update_display(display, partial=False)
+            logger.info("Rotary decrease complete: now on %s", self.active_app.title)
+        except Exception:
+            logger.exception("Rotary decrease failed on app %s", self.active_app.title)
+            self.__active_app = previous_index
+            try:
+                self.active_app.on_app_enter()
+                self.update_display(display, partial=False)
+            except Exception:
+                logger.exception("Failed to recover previous app after rotary decrease")
 
 
 class AppModule(Module):
