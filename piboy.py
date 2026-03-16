@@ -236,7 +236,14 @@ class AppState:
 
     def _safe_draw_active_app(self, panel: Image.Image, partial: bool):
         try:
-            return list(self.active_app.draw(panel, partial))
+            result = self.active_app.draw(panel, partial)
+
+            # Some apps return a single tuple: (image, x, y)
+            # Others return an iterable of tuples.
+            if isinstance(result, tuple) and len(result) == 3:
+                return [result]
+
+            return list(result)
         except Exception:
             logger.exception(
                 "App draw failed for index=%s title=%s",
