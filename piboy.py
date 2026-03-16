@@ -37,29 +37,16 @@ from status_led import StatusLed
 fileConfig(fname="config.ini")
 logger = logging.getLogger(__name__)
 
-# Force displayed/footer clock to Central Time
 LOCAL_TZ = ZoneInfo("America/Chicago")
-
-# UI sound settings
 TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
 
-# Status LED
 STATUS_LED_PIN = 16
 LOW_BATTERY_THRESHOLD = 0.20
 
-# -----------------------------------------
-# Rotary encoder pins (Adafruit #377)
-# Verified working in your test script:
-#   A -> GPIO17
-#   B -> GPIO27
-#   SW -> GPIO22
-#   Common -> GND
-# -----------------------------------------
 ENC_A_PIN = 17
 ENC_B_PIN = 27
 ENC_SW_PIN = 22
 
-# Encoder behavior tuning
 ENC_POLL_S = 0.008
 ENC_STEP_RATE_LIMIT_S = 0.140
 BTN_DEBOUNCE_S = 0.080
@@ -67,10 +54,6 @@ BTN_LONGPRESS_S = 0.70
 
 
 def play_tab_switch_sfx():
-    """
-    Play a short UI sound without blocking the app.
-    Tries MAX98357A first, then falls back to default ALSA output.
-    """
     if not os.path.isfile(TAB_SWITCH_SFX):
         return
 
@@ -109,7 +92,10 @@ class AppState:
         self.__image_buffer = self.__init_buffer()
         self.__apps: list[App] = []
         self.__active_app = 0
+
         self.__display_lock = threading.Lock()
+        self.__state_lock = threading.RLock()
+        self.__switching_app = False
 
     def __init_buffer(self) -> Image.Image:
         return Image.new("RGB", self.__environment.app_config.resolution, self.__environment.app_config.background)
@@ -180,56 +166,57 @@ class AppState:
             self.__active_app = len(self.__apps) - 1
 
     def set_active_app_index(self, index: int, display: Display):
-        """Directly select an app by index (used by the rotary selector switch)."""
-        if index < 0 or index >= len(self.__apps):
-            logger.warning("Rejected app index %s (out of range)", index)
-            return
-        if index == self.__active_app:
-            return
+        with self.__state_lock:
+            if self.__switching_app:
+                logger.info("Ignoring selector change while app switch is already in progress")
+                return
 
-        previous_index = self.__active_app
-        previous_title = self.__apps[previous_index].title
-        next_title = self.__apps[index].title
+            if index < 0 or index >= len(self.__apps):
+                logger.warning("Rejected app index %s (out of range)", index)
+                return
+            if index == self.__active_app:
+                return
 
-        logger.info(
-            "Switching app by selector: %s (%s) -> %s (%s)",
-            previous_index,
-            previous_title,
-            index,
-            next_title,
-        )
+            previous_index = self.__active_app
+            previous_title = self.__apps[previous_index].title
+            next_title = self.__apps[index].title
 
-        try:
-            self.active_app.on_app_leave()
-        except Exception:
-            logger.exception("on_app_leave failed for %s", previous_title)
+            logger.info(
+                "Switching app by selector: %s (%s) -> %s (%s)",
+                previous_index,
+                previous_title,
+                index,
+                next_title,
+            )
 
-        self.__active_app = index
+            self.__switching_app = True
 
-        try:
-            logger.info("Entering app: %s", self.active_app.title)
-            self.active_app.on_app_enter()
-            play_tab_switch_sfx()
-            logger.info("Updating display for app: %s", self.active_app.title)
-            self.update_display(display, partial=False)
-            logger.info("Finished app switch to: %s", self.active_app.title)
-        except Exception:
-            logger.exception("App switch failed for %s; reverting to %s", next_title, previous_title)
-            self.__active_app = previous_index
             try:
+                try:
+                    self.active_app.on_app_leave()
+                except Exception:
+                    logger.exception("on_app_leave failed for %s", previous_title)
+
+                self.__active_app = index
+
+                logger.info("Entering app: %s", self.active_app.title)
                 self.active_app.on_app_enter()
-                self.update_display(display, partial=False)
+                play_tab_switch_sfx()
+                logger.info("Updating display for app: %s", self.active_app.title)
+                self.update_display(display, partial=False, allow_during_switch=True)
+                logger.info("Finished app switch to: %s", self.active_app.title)
             except Exception:
-                logger.exception("Failed to recover previous app: %s", previous_title)
+                logger.exception("App switch failed for %s; reverting to %s", next_title, previous_title)
+                self.__active_app = previous_index
+                try:
+                    self.active_app.on_app_enter()
+                    self.update_display(display, partial=False, allow_during_switch=True)
+                except Exception:
+                    logger.exception("Failed to recover previous app: %s", previous_title)
+            finally:
+                self.__switching_app = False
 
     def get_status_led_mode(self) -> str:
-        """
-        Priority:
-          1. sensor/data error -> triple flash
-          2. low battery      -> fast blink
-          3. no GPS data      -> slow blink
-          4. healthy          -> solid on
-        """
         try:
             env_status = self.environment_data_provider.get_device_status()
         except Exception:
@@ -270,38 +257,48 @@ class AppState:
                 except Exception:
                     logger.exception("Failed updating status LED mode")
 
+            # Do not push footer refreshes while a full app switch is in progress
+            if self.__switching_app:
+                self.__tick()
+                continue
+
             image, x0, y0 = draw_footer(self.image_buffer, self)
             self._show_display(display, image, x0, y0)
             self.__tick()
 
-    def update_display(self, display: Display, partial=False):
+    def update_display(self, display: Display, partial=False, allow_during_switch=False):
+        if self.__switching_app and partial and not allow_during_switch:
+            logger.info("Skipping partial update while switching apps: app=%s", self.active_app.title)
+            return
+
         logger.info("update_display start: app=%s partial=%s", self.active_app.title, partial)
 
-        image = self.clear_buffer()
-        app_bbox = (
-            self.__environment.app_config.app_side_offset,
-            self.__environment.app_config.app_top_offset,
-            self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
-            self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
-        )
-        x_offset, y_offset = app_bbox[0:2]
+        with self.__state_lock:
+            image = self.clear_buffer()
+            app_bbox = (
+                self.__environment.app_config.app_side_offset,
+                self.__environment.app_config.app_top_offset,
+                self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+                self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
+            )
+            x_offset, y_offset = app_bbox[0:2]
 
-        try:
-            with self.__display_lock:
-                if partial:
-                    for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                        display.show(patch, x0 + x_offset, y0 + y_offset)
-                else:
-                    for patch, x0, y0 in draw_base(image, self):
-                        display.show(patch, x0, y0)
-                    for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                        image.paste(patch, (x0 + x_offset, y0 + y_offset))
-                    display.show(image.crop(app_bbox), x_offset, y_offset)
+            try:
+                with self.__display_lock:
+                    if partial:
+                        for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                            display.show(patch, x0 + x_offset, y0 + y_offset)
+                    else:
+                        for patch, x0, y0 in draw_base(image, self):
+                            display.show(patch, x0, y0)
+                        for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                            image.paste(patch, (x0 + x_offset, y0 + y_offset))
+                        display.show(image.crop(app_bbox), x_offset, y_offset)
 
-            logger.info("update_display complete: app=%s partial=%s", self.active_app.title, partial)
-        except Exception:
-            logger.exception("update_display failed: app=%s partial=%s", self.active_app.title, partial)
-            raise
+                logger.info("update_display complete: app=%s partial=%s", self.active_app.title, partial)
+            except Exception:
+                logger.exception("update_display failed: app=%s partial=%s", self.active_app.title, partial)
+                raise
 
     def on_key_left(self, display: Display):
         self.active_app.on_key_left()
@@ -328,56 +325,72 @@ class AppState:
         self.update_display(display, partial=True)
 
     def on_rotary_increase(self, display: Display):
-        previous_index = self.__active_app
-        previous_title = self.active_app.title
+        with self.__state_lock:
+            if self.__switching_app:
+                logger.info("Ignoring rotary increase while app switch is already in progress")
+                return
 
-        try:
-            self.active_app.on_app_leave()
-        except Exception:
-            logger.exception("on_app_leave failed for %s", previous_title)
+            previous_index = self.__active_app
+            previous_title = self.active_app.title
+            self.__switching_app = True
 
-        self.next_app()
-        logger.info("Rotary increase: %s -> %s", previous_title, self.active_app.title)
-
-        try:
-            self.active_app.on_app_enter()
-            play_tab_switch_sfx()
-            self.update_display(display, partial=False)
-            logger.info("Rotary increase complete: now on %s", self.active_app.title)
-        except Exception:
-            logger.exception("Rotary increase failed on app %s", self.active_app.title)
-            self.__active_app = previous_index
             try:
+                try:
+                    self.active_app.on_app_leave()
+                except Exception:
+                    logger.exception("on_app_leave failed for %s", previous_title)
+
+                self.next_app()
+                logger.info("Rotary increase: %s -> %s", previous_title, self.active_app.title)
+
                 self.active_app.on_app_enter()
-                self.update_display(display, partial=False)
+                play_tab_switch_sfx()
+                self.update_display(display, partial=False, allow_during_switch=True)
+                logger.info("Rotary increase complete: now on %s", self.active_app.title)
             except Exception:
-                logger.exception("Failed to recover previous app after rotary increase")
+                logger.exception("Rotary increase failed on app %s", self.active_app.title)
+                self.__active_app = previous_index
+                try:
+                    self.active_app.on_app_enter()
+                    self.update_display(display, partial=False, allow_during_switch=True)
+                except Exception:
+                    logger.exception("Failed to recover previous app after rotary increase")
+            finally:
+                self.__switching_app = False
 
     def on_rotary_decrease(self, display: Display):
-        previous_index = self.__active_app
-        previous_title = self.active_app.title
+        with self.__state_lock:
+            if self.__switching_app:
+                logger.info("Ignoring rotary decrease while app switch is already in progress")
+                return
 
-        try:
-            self.active_app.on_app_leave()
-        except Exception:
-            logger.exception("on_app_leave failed for %s", previous_title)
+            previous_index = self.__active_app
+            previous_title = self.active_app.title
+            self.__switching_app = True
 
-        self.previous_app()
-        logger.info("Rotary decrease: %s -> %s", previous_title, self.active_app.title)
-
-        try:
-            self.active_app.on_app_enter()
-            play_tab_switch_sfx()
-            self.update_display(display, partial=False)
-            logger.info("Rotary decrease complete: now on %s", self.active_app.title)
-        except Exception:
-            logger.exception("Rotary decrease failed on app %s", self.active_app.title)
-            self.__active_app = previous_index
             try:
+                try:
+                    self.active_app.on_app_leave()
+                except Exception:
+                    logger.exception("on_app_leave failed for %s", previous_title)
+
+                self.previous_app()
+                logger.info("Rotary decrease: %s -> %s", previous_title, self.active_app.title)
+
                 self.active_app.on_app_enter()
-                self.update_display(display, partial=False)
+                play_tab_switch_sfx()
+                self.update_display(display, partial=False, allow_during_switch=True)
+                logger.info("Rotary decrease complete: now on %s", self.active_app.title)
             except Exception:
-                logger.exception("Failed to recover previous app after rotary decrease")
+                logger.exception("Rotary decrease failed on app %s", self.active_app.title)
+                self.__active_app = previous_index
+                try:
+                    self.active_app.on_app_enter()
+                    self.update_display(display, partial=False, allow_during_switch=True)
+                except Exception:
+                    logger.exception("Failed to recover previous app after rotary decrease")
+            finally:
+                self.__switching_app = False
 
 
 class AppModule(Module):
@@ -504,10 +517,6 @@ class AppModule(Module):
     @singleton
     @provider
     def provide_input(self, e: Environment, state: AppState, display: Display) -> Input:
-        """
-        IMPORTANT: We intentionally do NOT use GPIOInput anymore.
-        All navigation is driven by the rotary encoder thread.
-        """
         if e.is_raspberry_pi:
             class RotaryOnlyInput(Input):
                 def close(self) -> None:
@@ -541,11 +550,11 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     GPIO.setwarnings(False)
 
     mode_pins = {
-        5: 0,   # INV
-        6: 1,   # SYS
-        12: 2,  # ENV
-        13: 3,  # RAD
-        20: 6,  # MAP (moved from GPIO19 to GPIO20)
+        5: 0,
+        6: 1,
+        12: 2,
+        13: 3,
+        20: 6,
     }
 
     for pin in mode_pins:
@@ -601,7 +610,7 @@ def start_rotary_encoder_thread(app_state: AppState, display: Display):
     last_step_t = 0.0
 
     btn_last = GPIO.input(ENC_SW_PIN)
-    btn_press_t = None  # type: float | None
+    btn_press_t = None
     long_fired = False
 
     trans = {
@@ -724,23 +733,13 @@ def draw_footer(image: Image.Image, state: AppState) -> tuple[Image.Image, int, 
     state_of_charge_str = f"{state.battery_status_provider.get_state_of_charge():.0%}"
     _, _, text_width, text_height = font.getbbox(state_of_charge_str)
     text_padding = (footer_height - text_height) // 2
-    draw.text(
-        (cursor_x + icon_padding, cursor_y + text_padding),
-        state_of_charge_str,
-        state.environment.app_config.accent,
-        font=font,
-    )
+    draw.text((cursor_x + icon_padding, cursor_y + text_padding), state_of_charge_str, state.environment.app_config.accent, font=font)
     cursor_x += text_width
 
     date_str = datetime.now(LOCAL_TZ).strftime("%m-%d-%Y %I:%M:%S %p")
     _, _, text_width, text_height = font.getbbox(date_str)
     text_padding = (footer_height - text_height) // 2
-    draw.text(
-        (width - footer_side_offset - text_padding - text_width, cursor_y + text_padding),
-        date_str,
-        state.environment.app_config.accent,
-        font=font,
-    )
+    draw.text((width - footer_side_offset - text_padding - text_width, cursor_y + text_padding), date_str, state.environment.app_config.accent, font=font)
 
     x0, y0 = start
     end = end[0] + 1, end[1] + 1
@@ -826,7 +825,6 @@ if __name__ == "__main__":
         udev_service = UDevService()
         udev_service.start()
 
-        # Start inputs
         start_rotary_encoder_thread(app_state, DISPLAY)
         start_mode_selector_thread(app_state, DISPLAY)
 
