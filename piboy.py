@@ -109,6 +109,7 @@ class AppState:
         self.__image_buffer = self.__init_buffer()
         self.__apps: list[App] = []
         self.__active_app = 0
+        self.__display_lock = threading.Lock()
 
     def __init_buffer(self) -> Image.Image:
         return Image.new("RGB", self.__environment.app_config.resolution, self.__environment.app_config.background)
@@ -119,6 +120,10 @@ class AppState:
     def clear_buffer(self) -> Image.Image:
         self.__image_buffer = self.__init_buffer()
         return self.__image_buffer
+
+    def _show_display(self, display: Display, image: Image.Image, x: int, y: int):
+        with self.__display_lock:
+            display.show(image, x, y)
 
     def add_app(self, app: App) -> Self:
         self.__apps.append(app)
@@ -266,7 +271,7 @@ class AppState:
                     logger.exception("Failed updating status LED mode")
 
             image, x0, y0 = draw_footer(self.image_buffer, self)
-            display.show(image, x0, y0)
+            self._show_display(display, image, x0, y0)
             self.__tick()
 
     def update_display(self, display: Display, partial=False):
@@ -282,15 +287,16 @@ class AppState:
         x_offset, y_offset = app_bbox[0:2]
 
         try:
-            if partial:
-                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                    display.show(patch, x0 + x_offset, y0 + y_offset)
-            else:
-                for patch, x0, y0 in draw_base(image, self):
-                    display.show(patch, x0, y0)
-                for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                    image.paste(patch, (x0 + x_offset, y0 + y_offset))
-                display.show(image.crop(app_bbox), x_offset, y_offset)
+            with self.__display_lock:
+                if partial:
+                    for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                        display.show(patch, x0 + x_offset, y0 + y_offset)
+                else:
+                    for patch, x0, y0 in draw_base(image, self):
+                        display.show(patch, x0, y0)
+                    for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                        image.paste(patch, (x0 + x_offset, y0 + y_offset))
+                    display.show(image.crop(app_bbox), x_offset, y_offset)
 
             logger.info("update_display complete: app=%s partial=%s", self.active_app.title, partial)
         except Exception:
