@@ -47,21 +47,14 @@ TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
 STATUS_LED_PIN = 16
 LOW_BATTERY_THRESHOLD = 0.20
 
-# CRT Stage 1 effects (stronger so they are actually visible on the TFT)
+# CRT Stage 1 effects
 CRT_ENABLED = True
 CRT_SCANLINE_SPACING = 2
 CRT_SCANLINE_ALPHA_EVEN = 80
 CRT_SCANLINE_ALPHA_ODD = 40
 CRT_FLICKER_STRENGTH = 0.12
 
-# -----------------------------------------
-# Rotary encoder pins (Adafruit #377)
-# Verified working in your test script:
-#   A -> GPIO17
-#   B -> GPIO27
-#   SW -> GPIO22
-#   Common -> GND
-# -----------------------------------------
+# Rotary encoder pins
 ENC_A_PIN = 17
 ENC_B_PIN = 27
 ENC_SW_PIN = 22
@@ -199,6 +192,11 @@ class AppState:
 
     @property
     def active_app(self) -> App:
+        if not self.__apps:
+            raise RuntimeError("No apps registered")
+        if self.__active_app < 0 or self.__active_app >= len(self.__apps):
+            logger.error("Active app index %s out of range, resetting to 0", self.__active_app)
+            self.__active_app = 0
         return self.__apps[self.__active_app]
 
     @property
@@ -215,15 +213,58 @@ class AppState:
         if self.__active_app < 0:
             self.__active_app = len(self.__apps) - 1
 
+    def _safe_app_title(self, index: int | None = None) -> str:
+        try:
+            idx = self.__active_app if index is None else index
+            return self.__apps[idx].title
+        except Exception:
+            return "UNKNOWN"
+
+    def _draw_error_app_panel(self, panel: Image.Image, message: str = "VISUAL ERROR") -> tuple[Image.Image, int, int]:
+        draw = ImageDraw.Draw(panel)
+        cfg = self.__environment.app_config
+        font_header = cfg.font_header
+        font_body = cfg.font_standard
+
+        w, h = panel.size
+        draw.rectangle((0, 0, w - 1, h - 1), outline=cfg.accent, width=1)
+        draw.text((10, 10), "DBG", fill=cfg.accent, font=font_header)
+        draw.text((10, 36), message, fill=cfg.accent, font=font_body)
+        draw.text((10, 56), f"APP: {self._safe_app_title()}", fill=cfg.accent, font=font_body)
+        draw.text((10, 76), f"IDX: {self.__active_app}", fill=cfg.accent, font=font_body)
+        return panel, 0, 0
+
+    def _safe_draw_active_app(self, panel: Image.Image, partial: bool):
+        try:
+            return list(self.active_app.draw(panel, partial))
+        except Exception:
+            logger.exception(
+                "App draw failed for index=%s title=%s",
+                self.__active_app,
+                self._safe_app_title(),
+            )
+            return [self._draw_error_app_panel(panel, "VISUAL ERROR")]
+
     def set_active_app_index(self, index: int, display: Display):
         if index < 0 or index >= len(self.__apps):
+            logger.warning("Ignoring invalid app index: %s", index)
             return
         if index == self.__active_app:
             return
 
-        self.active_app.on_app_leave()
+        try:
+            self.active_app.on_app_leave()
+        except Exception:
+            logger.exception("on_app_leave failed for index=%s title=%s", self.__active_app, self._safe_app_title())
+
         self.__active_app = index
-        self.active_app.on_app_enter()
+
+        try:
+            self.active_app.on_app_enter()
+        except Exception:
+            logger.exception("on_app_enter failed for index=%s title=%s", self.__active_app, self._safe_app_title())
+
+        logger.info("Active app set to index=%s title=%s", self.__active_app, self._safe_app_title())
         play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
@@ -268,73 +309,142 @@ class AppState:
                 except Exception:
                     logger.exception("Failed updating status LED mode")
 
-            image, x0, y0 = draw_footer(self.image_buffer, self)
-            image = apply_crt_stage1(image, self.tick, y_offset=y0)
-            display.show(image, x0, y0)
+            try:
+                image, x0, y0 = draw_footer(self.image_buffer, self)
+                image = apply_crt_stage1(image, self.tick, y_offset=y0)
+                display.show(image, x0, y0)
+            except Exception:
+                logger.exception("Footer refresh failed")
+
             self.__tick()
 
     def update_display(self, display: Display, partial=False):
-        image = self.clear_buffer()
-        app_bbox = (
-            self.__environment.app_config.app_side_offset,
-            self.__environment.app_config.app_top_offset,
-            self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
-            self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
-        )
-        x_offset, y_offset = app_bbox[0:2]
+        try:
+            image = self.clear_buffer()
+            app_bbox = (
+                self.__environment.app_config.app_side_offset,
+                self.__environment.app_config.app_top_offset,
+                self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+                self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
+            )
+            x_offset, y_offset = app_bbox[0:2]
 
-        if partial:
-            for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+            if partial:
+                for patch, x0, y0 in self._safe_draw_active_app(image.crop(app_bbox), partial):
+                    patch = apply_crt_stage1(patch, self.tick, y_offset=y0 + y_offset)
+                    display.show(patch, x0 + x_offset, y0 + y_offset)
+            else:
+                for patch, x0, y0 in draw_base(image, self):
+                    patch = apply_crt_stage1(patch, self.tick, y_offset=y0)
+                    display.show(patch, x0, y0)
+
+                for patch, x0, y0 in self._safe_draw_active_app(image.crop(app_bbox), partial):
+                    patch = apply_crt_stage1(patch, self.tick, y_offset=y0 + y_offset)
+                    image.paste(patch, (x0 + x_offset, y0 + y_offset))
+
+                final_crop = image.crop(app_bbox)
+                final_crop = apply_crt_stage1(final_crop, self.tick, y_offset=y_offset)
+                display.show(final_crop, x_offset, y_offset)
+        except Exception:
+            logger.exception(
+                "update_display failed for index=%s title=%s partial=%s",
+                self.__active_app,
+                self._safe_app_title(),
+                partial,
+            )
+            try:
+                fallback = self.clear_buffer()
+                for patch, x0, y0 in draw_base(fallback, self):
+                    patch = apply_crt_stage1(patch, self.tick, y_offset=y0)
+                    display.show(patch, x0, y0)
+
+                app_bbox = (
+                    self.__environment.app_config.app_side_offset,
+                    self.__environment.app_config.app_top_offset,
+                    self.__environment.app_config.width - self.__environment.app_config.app_side_offset,
+                    self.__environment.app_config.height - self.__environment.app_config.app_bottom_offset,
+                )
+                x_offset, y_offset = app_bbox[0:2]
+                err_panel = fallback.crop(app_bbox)
+                patch, x0, y0 = self._draw_error_app_panel(err_panel, "DISPLAY ERROR")
                 patch = apply_crt_stage1(patch, self.tick, y_offset=y0 + y_offset)
                 display.show(patch, x0 + x_offset, y0 + y_offset)
-        else:
-            for patch, x0, y0 in draw_base(image, self):
-                patch = apply_crt_stage1(patch, self.tick, y_offset=y0)
-                display.show(patch, x0, y0)
-
-            for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
-                patch = apply_crt_stage1(patch, self.tick, y_offset=y0 + y_offset)
-                image.paste(patch, (x0 + x_offset, y0 + y_offset))
-
-            final_crop = image.crop(app_bbox)
-            final_crop = apply_crt_stage1(final_crop, self.tick, y_offset=y_offset)
-            display.show(final_crop, x_offset, y_offset)
+            except Exception:
+                logger.exception("Fallback display render also failed")
 
     def on_key_left(self, display: Display):
-        self.active_app.on_key_left()
+        try:
+            self.active_app.on_key_left()
+        except Exception:
+            logger.exception("on_key_left failed for %s", self._safe_app_title())
         self.update_display(display, partial=True)
 
     def on_key_right(self, display: Display):
-        self.active_app.on_key_right()
+        try:
+            self.active_app.on_key_right()
+        except Exception:
+            logger.exception("on_key_right failed for %s", self._safe_app_title())
         self.update_display(display, partial=True)
 
     def on_key_up(self, display: Display):
-        self.active_app.on_key_up()
+        try:
+            self.active_app.on_key_up()
+        except Exception:
+            logger.exception("on_key_up failed for %s", self._safe_app_title())
         self.update_display(display, partial=True)
 
     def on_key_down(self, display: Display):
-        self.active_app.on_key_down()
+        try:
+            self.active_app.on_key_down()
+        except Exception:
+            logger.exception("on_key_down failed for %s", self._safe_app_title())
         self.update_display(display, partial=True)
 
     def on_key_a(self, display: Display):
-        self.active_app.on_key_a()
+        try:
+            self.active_app.on_key_a()
+        except Exception:
+            logger.exception("on_key_a failed for %s", self._safe_app_title())
         self.update_display(display, partial=True)
 
     def on_key_b(self, display: Display):
-        self.active_app.on_key_b()
+        try:
+            self.active_app.on_key_b()
+        except Exception:
+            logger.exception("on_key_b failed for %s", self._safe_app_title())
         self.update_display(display, partial=True)
 
     def on_rotary_increase(self, display: Display):
-        self.active_app.on_app_leave()
+        try:
+            self.active_app.on_app_leave()
+        except Exception:
+            logger.exception("on_app_leave failed during rotary increase for %s", self._safe_app_title())
+
         self.next_app()
-        self.active_app.on_app_enter()
+
+        try:
+            self.active_app.on_app_enter()
+        except Exception:
+            logger.exception("on_app_enter failed during rotary increase for %s", self._safe_app_title())
+
+        logger.info("Rotary increase -> index=%s title=%s", self.__active_app, self._safe_app_title())
         play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
     def on_rotary_decrease(self, display: Display):
-        self.active_app.on_app_leave()
+        try:
+            self.active_app.on_app_leave()
+        except Exception:
+            logger.exception("on_app_leave failed during rotary decrease for %s", self._safe_app_title())
+
         self.previous_app()
-        self.active_app.on_app_enter()
+
+        try:
+            self.active_app.on_app_enter()
+        except Exception:
+            logger.exception("on_app_enter failed during rotary decrease for %s", self._safe_app_title())
+
+        logger.info("Rotary decrease -> index=%s title=%s", self.__active_app, self._safe_app_title())
         play_tab_switch_sfx()
         self.update_display(display, partial=False)
 
@@ -500,9 +610,9 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         6: 1,    # SYS
         12: 2,   # ENV
         13: 3,   # RAD
+        25: 4,   # DBG
         20: 5,   # CLK
         26: 6,   # MAP
-        25: 4,   # DBG
     }
 
     for pin in mode_pins:
@@ -530,7 +640,7 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
 
             if stable_count >= 3 and idx is not None and idx != last_index:
                 try:
-                    logger.info("Mode selector switching to app index %s", idx)
+                    logger.info("Mode selector switching to app index=%s title=%s", idx, app_state.apps[idx].title)
                     app_state.set_active_app_index(idx, display)
                     last_index = idx
                 except Exception:
@@ -774,6 +884,10 @@ if __name__ == "__main__":
         .add_app(injector.get(ClockApp)) \
         .add_app(injector.get(MapApp))
 
+    logger.info("Registered apps:")
+    for idx, app in enumerate(app_state.apps):
+        logger.info("  index=%s title=%s class=%s", idx, app.title, app.__class__.__name__)
+
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
 
@@ -789,7 +903,11 @@ if __name__ == "__main__":
 
     DISPLAY.show(app_state.image_buffer, 0, 0)
     app_state.update_display(DISPLAY)
-    app_state.active_app.on_app_enter()
+
+    try:
+        app_state.active_app.on_app_enter()
+    except Exception:
+        logger.exception("Initial on_app_enter failed for index=%s title=%s", app_state.active_app_index, app_state.active_app.title)
 
     if status_led is not None:
         try:
