@@ -16,6 +16,7 @@ from app.App import App
 from app.EnvironmentApp import EnvironmentApp
 from app.FileManagerApp import FileManagerApp
 from app.MapApp import MapApp
+from app.PowerApp import PowerApp
 from app.NullApp import NullApp
 from app.RadioApp import RadioApp
 from app.UpdateApp import UpdateApp
@@ -825,12 +826,12 @@ if __name__ == "__main__":
     status_led = None
 
     app_state.add_app(injector.get(FileManagerApp)) \
-    .add_app(injector.get(UpdateApp)) \
-    .add_app(injector.get(EnvironmentApp)) \
-    .add_app(injector.get(RadioApp)) \
-    .add_app(injector.get(MapApp)) \
-    .add_app(NullApp("CLK")) \
-    .add_app(NullApp("DBG"))
+        .add_app(injector.get(UpdateApp)) \
+        .add_app(injector.get(EnvironmentApp)) \
+        .add_app(injector.get(RadioApp)) \
+        .add_app(injector.get(MapApp)) \
+        .add_app(injector.get(PowerApp)) \
+        .add_app(NullApp("DBG"))
 
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
