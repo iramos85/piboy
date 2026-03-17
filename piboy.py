@@ -283,10 +283,8 @@ class AppState:
             def normalize_draw_result(result):
                 if result is None:
                     return []
-
                 if isinstance(result, tuple) and len(result) == 3:
                     return [result]
-
                 return result
 
             try:
@@ -566,7 +564,7 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         13: 3,   # RAD
         20: 4,   # MAP
         26: 5,   # CLK
-        25: 6,   # DBG
+        23: 6,   # DBG
     }
 
     for pin in mode_pins:
@@ -865,5 +863,11 @@ if __name__ == "__main__":
         if status_led is not None:
             status_led.off()
             status_led.cleanup()
-        DISPLAY.close()
-        INPUT.close()
+        try:
+            DISPLAY.close()
+        except Exception:
+            logger.exception("Display close failed during shutdown")
+        try:
+            INPUT.close()
+        except Exception:
+            logger.exception("Input close failed during shutdown")
