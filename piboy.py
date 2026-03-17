@@ -560,11 +560,13 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     GPIO.setwarnings(False)
 
     mode_pins = {
-        5: 0,   # INV
-        6: 1,   # SYS
-        12: 2,  # ENV
-        13: 3,  # RAD
-        20: 4,  # MAP
+        5: 0,    # INV
+        6: 1,    # SYS
+        12: 2,   # ENV
+        13: 3,   # RAD
+        20: 4,   # MAP
+        26: 5,   # CLK
+        25: 6,   # DBG
     }
 
     for pin in mode_pins:
@@ -573,16 +575,17 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     def read_active_index():
         low_pins = [pin for pin in mode_pins if GPIO.input(pin) == GPIO.LOW]
         if len(low_pins) == 1:
-            return mode_pins[low_pins[0]]
-        return None
+            return mode_pins[low_pins[0]], low_pins
+        return None, low_pins
 
     def worker():
         last_index = None
         candidate = None
         stable_count = 0
+        last_open_logged = False
 
         while True:
-            idx = read_active_index()
+            idx, low_pins = read_active_index()
 
             if idx == candidate:
                 stable_count += 1
@@ -590,12 +593,17 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
                 candidate = idx
                 stable_count = 1
 
-            if stable_count >= 3 and idx is not None and idx != last_index:
-                try:
-                    app_state.set_active_app_index(idx, display)
-                    last_index = idx
-                except Exception:
-                    logger.exception("Failed to set app index from mode selector")
+            if stable_count >= 3:
+                if idx is not None and idx != last_index:
+                    try:
+                        app_state.set_active_app_index(idx, display)
+                        last_index = idx
+                        last_open_logged = False
+                    except Exception:
+                        logger.exception("Failed to set app index from mode selector")
+                elif idx is None and low_pins == [] and not last_open_logged:
+                    logger.info("Selector in open position (no app selected); ignoring")
+                    last_open_logged = True
 
             time.sleep(0.02)
 
@@ -821,7 +829,9 @@ if __name__ == "__main__":
         .add_app(injector.get(UpdateApp)) \
         .add_app(injector.get(EnvironmentApp)) \
         .add_app(injector.get(RadioApp)) \
-        .add_app(NullApp("MAP"))
+        .add_app(NullApp("MAP")) \
+        .add_app(NullApp("CLK")) \
+        .add_app(NullApp("DBG"))
 
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
