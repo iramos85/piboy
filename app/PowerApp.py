@@ -3,12 +3,12 @@ import time
 from typing import Optional
 
 from injector import inject
-from PIL import Image, ImageDraw
+from PIL import Image, ImageDraw, ImageFont
 
 from app.App import App
 from core.decorator import override
-from core import resources
 from data.BatteryStatusProvider import BatteryStatusProvider
+from environment import AppConfig
 
 logger = logging.getLogger("app")
 
@@ -17,8 +17,9 @@ class PowerApp(App):
     """Retro-futuristic reactor themed power status screen."""
 
     @inject
-    def __init__(self, battery_status_provider: BatteryStatusProvider):
+    def __init__(self, battery_status_provider: BatteryStatusProvider, app_config: AppConfig):
         self.__battery_status_provider = battery_status_provider
+        self.__app_config = app_config
         self.__last_percent: Optional[int] = None
         self.__last_time: Optional[float] = None
         self.__decay_rate_per_hour: Optional[float] = None
@@ -40,10 +41,6 @@ class PowerApp(App):
             return None
 
     def __safe_voltage(self) -> Optional[float]:
-        """
-        Tries a few likely battery provider method names so this app can survive
-        across slightly different provider implementations.
-        """
         provider = self.__battery_status_provider
 
         for attr in [
@@ -179,9 +176,9 @@ class PowerApp(App):
         draw = ImageDraw.Draw(image)
         width, height = image.size
 
-        font_big = resources.roboto_bold(22)
-        font_med = resources.roboto_bold(15)
-        font_small = resources.roboto(12)
+        font_small = self.__app_config.font_standard
+        font_med = self.__app_config.font_header
+        font_big = ImageFont.truetype(self.__app_config.font_name, 22)
 
         percent = self.__safe_percent()
         volts = self.__safe_voltage()
@@ -192,13 +189,11 @@ class PowerApp(App):
         runtime = self.__format_runtime(percent)
         decay = self.__format_decay()
 
-        # Header
         draw.line((6, 8, width - 6, 8), fill=255, width=1)
         draw.text((12, 14), "PWR", font=font_big, fill=255)
         self.__draw_trefoil(draw, width - 22, 24)
         draw.line((6, 42, width - 6, 42), fill=255, width=1)
 
-        # Main charge block
         main_label_y = 52
         draw.text((12, main_label_y), "CORE CHARGE", font=font_med, fill=255)
 
@@ -213,14 +208,12 @@ class PowerApp(App):
         bar_h = 16
         self.__draw_segments(draw, bar_x, bar_y, bar_w, bar_h, percent or 0, segments=10)
 
-        # Optional warning blink feel for low battery
         blink_on = int(time.time()) % 2 == 0
-        if percent is not None and percent <= 25 and blink_on:
-            draw.text((12, 100), "!! LOW RESERVE !!", font=font_small, fill=255)
-        elif state == "CRITICAL" and blink_on:
+        if state == "CRITICAL" and blink_on:
             draw.text((12, 100), "!! CRITICAL CORE !!", font=font_small, fill=255)
+        elif percent is not None and percent <= 25 and blink_on:
+            draw.text((12, 100), "!! LOW RESERVE !!", font=font_small, fill=255)
 
-        # Detail grid
         left_x = 12
         right_x = width // 2 + 4
         row1_y = 118
