@@ -15,7 +15,7 @@ import environment
 from app.App import App
 from app.EnvironmentApp import EnvironmentApp
 from app.FileManagerApp import FileManagerApp
-from app.MapApp import MapApp
+from app.NullApp import NullApp
 from app.RadioApp import RadioApp
 from app.UpdateApp import UpdateApp
 from core import resources
@@ -808,7 +808,7 @@ if __name__ == "__main__":
         .add_app(injector.get(UpdateApp)) \
         .add_app(injector.get(EnvironmentApp)) \
         .add_app(injector.get(RadioApp)) \
-        .add_app(injector.get(MapApp))
+        .add_app(NullApp("MAP"))
 
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
