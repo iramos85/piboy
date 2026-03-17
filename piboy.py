@@ -280,16 +280,29 @@ class AppState:
             )
             x_offset, y_offset = app_bbox[0:2]
 
+            def normalize_draw_result(result):
+                if result is None:
+                    return []
+
+                if isinstance(result, tuple) and len(result) == 3:
+                    return [result]
+
+                return result
+
             try:
                 with self.__display_lock:
                     if partial:
-                        for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+                        app_result = normalize_draw_result(self.active_app.draw(image.crop(app_bbox), partial))
+                        for patch, x0, y0 in app_result:
                             display.show(patch, x0 + x_offset, y0 + y_offset)
                     else:
                         for patch, x0, y0 in draw_base(image, self):
                             display.show(patch, x0, y0)
-                        for patch, x0, y0 in self.active_app.draw(image.crop(app_bbox), partial):
+
+                        app_result = normalize_draw_result(self.active_app.draw(image.crop(app_bbox), partial))
+                        for patch, x0, y0 in app_result:
                             image.paste(patch, (x0 + x_offset, y0 + y_offset))
+
                         display.show(image.crop(app_bbox), x_offset, y_offset)
 
                 logger.info("update_display complete: app=%s partial=%s", self.active_app.title, partial)
