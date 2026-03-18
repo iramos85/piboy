@@ -45,7 +45,7 @@ class StatusApp(SelfUpdatingApp):
         self.__environment_data_provider = environment_data_provider
         self.__location_provider = location_provider
 
-        self.__view_mode = "status"   # status | menu | scan
+        self.__view_mode = "status"   # status | menu | scan | detail
         self.__menu_items = [
             "REFRESH",
             "SCAN WIFI",
@@ -55,8 +55,10 @@ class StatusApp(SelfUpdatingApp):
         ]
         self.__menu_index = 0
 
-        self.__scan_results: list[str] = []
+        self.__scan_results: list[dict] = []
         self.__scan_selected_index = 0
+        self.__detail_menu_index = 0
+
         self.__last_action_message = "READY"
         self.__last_action_time = 0.0
         self.__scan_lock = threading.Lock()
@@ -313,6 +315,20 @@ class StatusApp(SelfUpdatingApp):
         except Exception:
             return "STATUS ERR"
 
+    def __current_network(self) -> str:
+        return self.__get_ssid()
+
+    def __saved_connections(self) -> set[str]:
+        out = self.__run_command(["nmcli", "-t", "-f", "NAME,DEVICE", "connection", "show"])
+        saved = set()
+        for line in out.splitlines():
+            if not line.strip():
+                continue
+            parts = line.split(":")
+            if parts and parts[0].strip():
+                saved.add(parts[0].strip())
+        return saved
+
     def __scan_wifi_worker(self):
         with self.__scan_lock:
             if self.__scan_in_progress:
@@ -322,7 +338,7 @@ class StatusApp(SelfUpdatingApp):
         try:
             self.__set_action_message("SCANNING WIFI...")
             rc, out, err = self.__run_command_rc(
-                ["nmcli", "-t", "-f", "SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "yes"]
+                ["nmcli", "-t", "-f", "ACTIVE,SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes"]
             )
 
             if rc != 0:
@@ -332,19 +348,24 @@ class StatusApp(SelfUpdatingApp):
                 self.__set_action_message("SCAN FAILED")
                 return
 
+            saved = self.__saved_connections()
+            current = self.__current_network()
+
+            parsed: list[dict] = []
             seen = set()
-            parsed: list[tuple[str, int]] = []
 
             for line in out.splitlines():
                 if not line.strip():
                     continue
 
                 parts = line.split(":")
-                if len(parts) < 2:
+                if len(parts) < 4:
                     continue
 
-                signal_text = parts[-1].strip()
-                ssid = ":".join(parts[:-1]).strip()
+                active = parts[0].strip()
+                signal_text = parts[-2].strip()
+                security = parts[-1].strip() or "OPEN"
+                ssid = ":".join(parts[1:-2]).strip()
 
                 if not ssid:
                     ssid = "<hidden>"
@@ -358,13 +379,20 @@ class StatusApp(SelfUpdatingApp):
                 except Exception:
                     signal = 0
 
-                parsed.append((ssid, signal))
+                parsed.append(
+                    {
+                        "ssid": ssid,
+                        "signal": signal,
+                        "security": security,
+                        "active": active == "yes" or ssid == current,
+                        "saved": ssid in saved,
+                    }
+                )
 
-            parsed.sort(key=lambda x: x[1], reverse=True)
-            parsed = parsed[: self.__MAX_SCAN_RESULTS]
-
-            self.__scan_results = [f"{ssid[:16]:16} {signal:>3}%" for ssid, signal in parsed]
+            parsed.sort(key=lambda x: x["signal"], reverse=True)
+            self.__scan_results = parsed[: self.__MAX_SCAN_RESULTS]
             self.__scan_selected_index = 0
+            self.__detail_menu_index = 0
             self.__view_mode = "scan"
 
             if self.__scan_results:
@@ -373,7 +401,7 @@ class StatusApp(SelfUpdatingApp):
                 self.__set_action_message("NO NETWORKS FOUND")
 
             try:
-                self._SelfUpdatingApp__update_callback(True)  # trigger redraw if available
+                self._SelfUpdatingApp__update_callback(True)
             except Exception:
                 pass
 
@@ -405,6 +433,43 @@ class StatusApp(SelfUpdatingApp):
             logger.warning("Reconnect failed: %s", err)
             self.__set_action_message("RECONNECT FAILED")
 
+    def __connect_selected_network(self):
+        if not self.__scan_results:
+            self.__set_action_message("NO NETWORK SELECTED")
+            return
+
+        net = self.__scan_results[self.__scan_selected_index]
+        ssid = net["ssid"]
+
+        if not net["saved"]:
+            self.__set_action_message("NOT A SAVED NETWORK")
+            return
+
+        rc, _, err = self.__run_command_rc(["nmcli", "connection", "up", ssid])
+        if rc == 0:
+            self.__set_action_message(f"CONNECTED {ssid[:18]}")
+            self.__view_mode = "scan"
+        else:
+            logger.warning("Connect failed for %s: %s", ssid, err)
+            self.__set_action_message("CONNECT FAILED")
+
+    def __detail_menu_items(self) -> list[str]:
+        if not self.__scan_results:
+            return ["BACK"]
+
+        net = self.__scan_results[self.__scan_selected_index]
+        items = []
+
+        if net["active"]:
+            items.append("CONNECTED")
+        elif net["saved"]:
+            items.append("CONNECT")
+        else:
+            items.append("UNSAVED")
+
+        items.append("BACK")
+        return items
+
     def __execute_selected_action(self):
         item = self.__menu_items[self.__menu_index]
 
@@ -419,6 +484,19 @@ class StatusApp(SelfUpdatingApp):
         elif item == "BACK":
             self.__view_mode = "status"
             self.__set_action_message("BACK TO STATUS")
+
+    def __execute_detail_action(self):
+        item = self.__detail_menu_items()[self.__detail_menu_index]
+
+        if item == "CONNECT":
+            self.__connect_selected_network()
+        elif item == "CONNECTED":
+            self.__set_action_message("ALREADY CONNECTED")
+        elif item == "UNSAVED":
+            self.__set_action_message("PASSWORD ENTRY LATER")
+        elif item == "BACK":
+            self.__view_mode = "scan"
+            self.__set_action_message("BACK TO SCAN")
 
     @override
     def on_app_enter(self):
@@ -436,6 +514,8 @@ class StatusApp(SelfUpdatingApp):
             self.__menu_index = (self.__menu_index - 1) % len(self.__menu_items)
         elif self.__view_mode == "scan" and self.__scan_results:
             self.__scan_selected_index = (self.__scan_selected_index - 1) % len(self.__scan_results)
+        elif self.__view_mode == "detail":
+            self.__detail_menu_index = (self.__detail_menu_index - 1) % len(self.__detail_menu_items())
 
     @override
     def on_key_down(self):
@@ -443,6 +523,8 @@ class StatusApp(SelfUpdatingApp):
             self.__menu_index = (self.__menu_index + 1) % len(self.__menu_items)
         elif self.__view_mode == "scan" and self.__scan_results:
             self.__scan_selected_index = (self.__scan_selected_index + 1) % len(self.__scan_results)
+        elif self.__view_mode == "detail":
+            self.__detail_menu_index = (self.__detail_menu_index + 1) % len(self.__detail_menu_items())
 
     @override
     def on_key_a(self):
@@ -452,7 +534,12 @@ class StatusApp(SelfUpdatingApp):
         elif self.__view_mode == "menu":
             self.__execute_selected_action()
         elif self.__view_mode == "scan":
-            self.__set_action_message("VIEW ONLY")
+            if self.__scan_results:
+                self.__detail_menu_index = 0
+                self.__view_mode = "detail"
+                self.__set_action_message("NET DETAILS")
+        elif self.__view_mode == "detail":
+            self.__execute_detail_action()
 
     @override
     def on_key_b(self):
@@ -465,6 +552,9 @@ class StatusApp(SelfUpdatingApp):
         elif self.__view_mode == "scan":
             self.__view_mode = "menu"
             self.__set_action_message("BACK TO MENU")
+        elif self.__view_mode == "detail":
+            self.__view_mode = "scan"
+            self.__set_action_message("BACK TO SCAN")
 
     def __draw_status_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
         draw = ImageDraw.Draw(image)
@@ -474,42 +564,24 @@ class StatusApp(SelfUpdatingApp):
         x = self.__LEFT
         y = self.__TOP
 
-        hostname = self.__get_hostname()
-        ssid = self.__get_ssid()
-        ip = self.__get_ip_address()
-        signal = self.__get_wifi_signal_percent()
-        connection = self.__get_connection_text()
-
-        battery = self.__get_battery_text()
-        battery_state = self.__get_battery_status_text()
-        cpu_temp = self.__get_cpu_temp_c()
-        ram = self.__get_ram_percent()
-        disk = self.__get_disk_free()
-        uptime = self.__get_uptime()
-
-        env = self.__get_env_text()
-        gps = self.__get_gps_text()
-        warn = self.__get_warning_text()
-        action = self.__get_action_message()
-
         lines = [
             "STATUS",
-            f"HOST {hostname}",
-            f"NET  {ssid}",
-            f"IP   {ip}",
-            f"SIG  {signal} {connection}",
+            f"HOST {self.__get_hostname()}",
+            f"NET  {self.__get_ssid()}",
+            f"IP   {self.__get_ip_address()}",
+            f"SIG  {self.__get_wifi_signal_percent()} {self.__get_connection_text()}",
             "",
-            f"PWR  {battery} {battery_state}",
-            f"CPU  {cpu_temp}",
-            f"RAM  {ram}",
-            f"DSK  {disk} FREE",
-            f"UP   {uptime}",
+            f"PWR  {self.__get_battery_text()} {self.__get_battery_status_text()}",
+            f"CPU  {self.__get_cpu_temp_c()}",
+            f"RAM  {self.__get_ram_percent()}",
+            f"DSK  {self.__get_disk_free()} FREE",
+            f"UP   {self.__get_uptime()}",
             "",
-            f"ENV  {env}",
-            f"GPS  {gps}",
+            f"ENV  {self.__get_env_text()}",
+            f"GPS  {self.__get_gps_text()}",
             "",
-            f"WARN {warn}",
-            f"MSG  {action}",
+            f"WARN {self.__get_warning_text()}",
+            f"MSG  {self.__get_action_message()}",
         ]
 
         for i, line in enumerate(lines):
@@ -560,15 +632,63 @@ class StatusApp(SelfUpdatingApp):
             draw.text((x, y), "NO RESULTS", self.__app_config.accent, font=font)
             y += self.__LINE_HEIGHT
         else:
-            for idx, item in enumerate(self.__scan_results):
+            for idx, net in enumerate(self.__scan_results):
                 prefix = ">" if idx == self.__scan_selected_index else " "
-                draw.text((x, y), f"{prefix} {item}"[:34], self.__app_config.accent, font=font)
+                flags = ""
+                if net["active"]:
+                    flags += "*"
+                if net["saved"]:
+                    flags += "S"
+                line = f"{prefix} {net['ssid'][:14]:14} {net['signal']:>3}% {flags}"
+                draw.text((x, y), line[:34], self.__app_config.accent, font=font)
                 y += self.__LINE_HEIGHT
 
         y += 6
-        draw.text((x, y), f"MSG {self.__get_action_message()}"[:34], self.__app_config.accent, font=font)
+        draw.text((x, y), "*=LIVE S=SAVED", self.__app_config.accent, font=font)
         y += self.__LINE_HEIGHT
-        draw.text((x, y), "B=MENU", self.__app_config.accent, font=font)
+        draw.text((x, y), "A=DETAIL  B=MENU", self.__app_config.accent, font=font)
+
+        return image, 0, 0
+
+    def __draw_detail_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
+        draw = ImageDraw.Draw(image)
+        font = self.__app_config.font_standard
+        small_font = self.__app_config.font_header
+
+        x = self.__LEFT
+        y = self.__TOP
+
+        if not self.__scan_results:
+            draw.text((x, y), "NET DETAIL", self.__app_config.accent, font=small_font)
+            y += 24
+            draw.text((x, y), "NO NETWORK", self.__app_config.accent, font=font)
+            return image, 0, 0
+
+        net = self.__scan_results[self.__scan_selected_index]
+
+        draw.text((x, y), "NET DETAIL", self.__app_config.accent, font=small_font)
+        y += 24
+
+        lines = [
+            f"SSID {net['ssid']}",
+            f"SIG  {net['signal']}%",
+            f"SEC  {net['security'][:18]}",
+            f"LIVE {'YES' if net['active'] else 'NO'}",
+            f"SAVE {'YES' if net['saved'] else 'NO'}",
+            "",
+        ]
+
+        for line in lines:
+            draw.text((x, y), line[:34], self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+
+        for idx, item in enumerate(self.__detail_menu_items()):
+            prefix = ">" if idx == self.__detail_menu_index else " "
+            draw.text((x, y), f"{prefix} {item}", self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+
+        y += 4
+        draw.text((x, y), f"MSG {self.__get_action_message()}"[:34], self.__app_config.accent, font=font)
 
         return image, 0, 0
 
@@ -578,4 +698,6 @@ class StatusApp(SelfUpdatingApp):
             return self.__draw_menu_view(image)
         if self.__view_mode == "scan":
             return self.__draw_scan_view(image)
+        if self.__view_mode == "detail":
+            return self.__draw_detail_view(image)
         return self.__draw_status_view(image)
