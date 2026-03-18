@@ -505,7 +505,7 @@ class AppModule(Module):
     @singleton
     @provider
     def provide_draw_callback(self, state: AppState, display: Display) -> Callable[[bool], None]:
-        return lambda partial: state.update_display(display, partial)
+        return lambda partial=False: state.update_display(display, partial)
 
     @singleton
     @provider
