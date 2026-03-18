@@ -44,6 +44,11 @@ class StatusApp(SelfUpdatingApp):
     def title(self) -> str:
         return "STAT"
 
+    @property
+    @override
+    def refresh_time(self) -> float:
+        return 3.0
+
     @staticmethod
     def __run_command(command: list[str]) -> str:
         try:
@@ -315,7 +320,3 @@ class StatusApp(SelfUpdatingApp):
             y += self.__LINE_HEIGHT if i != 0 else 22
 
         return image, 0, 0
-
-    @override
-    def get_refresh_interval(self) -> float:
-        return 3.0
