@@ -19,6 +19,7 @@ from app.MapApp import MapApp
 from app.PowerApp import PowerApp
 from app.NullApp import NullApp
 from app.RadioApp import RadioApp
+from app.StatusApp import StatusApp
 from app.UpdateApp import UpdateApp
 from core import resources
 from core.data import ConnectionStatus, DeviceStatus
@@ -566,7 +567,7 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
         13: 3,   # RAD
         20: 4,   # MAP
         26: 5,   # CLK
-        23: 6,   # DBG
+        23: 6,   # STAT
     }
 
     for pin in mode_pins:
@@ -831,7 +832,7 @@ if __name__ == "__main__":
         .add_app(injector.get(RadioApp)) \
         .add_app(injector.get(MapApp)) \
         .add_app(injector.get(PowerApp)) \
-        .add_app(NullApp("DBG"))
+        .add_app(injector.get(StatusApp))
 
     if injector.get(Environment).is_raspberry_pi:
         from core.udev_service import UDevService
