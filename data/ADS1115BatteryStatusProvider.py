@@ -50,21 +50,31 @@ class ADS1115BatteryStatusProvider(BatteryStatusProvider):
         )
         return measured_voltage
 
+    def __read_battery_voltage(self) -> float:
+        tap_voltage = self.__read_channel()
+        battery_voltage = tap_voltage * self.__DIVIDER_RATIO
+
+        logger.debug(f'{tap_voltage=}, {battery_voltage=}')
+
+        if tap_voltage <= 0.05:
+            self.__device_status = DeviceStatus.NO_DATA
+            return 0.0
+
+        self.__last_levels.append(battery_voltage)
+        return sum(self.__last_levels) / len(self.__last_levels)
+
+    def get_battery_voltage(self) -> float:
+        try:
+            return self.__read_battery_voltage()
+        except OSError as e:
+            logger.warning(e)
+            self.__device_status = DeviceStatus.UNAVAILABLE
+            return 0.0
+
     @override
     def get_state_of_charge(self) -> float:
         try:
-            tap_voltage = self.__read_channel()
-            battery_voltage = tap_voltage * self.__DIVIDER_RATIO
-
-            logger.debug(f'{tap_voltage=}, {battery_voltage=}')
-
-            # detect disconnected / invalid reading
-            if tap_voltage <= 0.05:
-                self.__device_status = DeviceStatus.NO_DATA
-                return 0.0
-
-            self.__last_levels.append(battery_voltage)
-            smoothed_voltage = sum(self.__last_levels) / len(self.__last_levels)
+            smoothed_voltage = self.__read_battery_voltage()
 
             if smoothed_voltage < self.__V_DISCHARGED:
                 return 0.0
