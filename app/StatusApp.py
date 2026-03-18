@@ -2,7 +2,7 @@ import logging
 import shutil
 import socket
 import subprocess
-from typing import Optional
+from typing import Callable, Optional
 
 from injector import inject
 from PIL import Image, ImageDraw
@@ -28,11 +28,14 @@ class StatusApp(SelfUpdatingApp):
     def __init__(
         self,
         app_config: AppConfig,
+        draw_callback: Callable[[bool], None],
         network_status_provider: NetworkStatusProvider,
         battery_status_provider: BatteryStatusProvider,
         environment_data_provider: EnvironmentDataProvider,
         location_provider: LocationProvider,
     ):
+        super().__init__(draw_callback)
+
         self.__app_config = app_config
         self.__network_status_provider = network_status_provider
         self.__battery_status_provider = battery_status_provider
