@@ -203,26 +203,12 @@ class StatusApp(SelfUpdatingApp):
             if status in (DeviceStatus.NO_DATA, DeviceStatus.UNAVAILABLE):
                 return "ERR"
 
-            provider = self.__environment_data_provider
+            data = self.__environment_data_provider.get_environment_data()
+            if data is None:
+                return "ERR"
 
-            if hasattr(provider, "get_current_data"):
-                data = provider.get_current_data()
-                temp_f = (data.temperature * 9 / 5) + 32
-                return f"{temp_f:.1f}F {data.humidity:.0f}%"
-
-            if hasattr(provider, "get_temperature") and hasattr(provider, "get_humidity"):
-                temp_c = provider.get_temperature()
-                humidity = provider.get_humidity()
-                temp_f = (temp_c * 9 / 5) + 32
-                return f"{temp_f:.1f}F {humidity:.0f}%"
-
-            if hasattr(provider, "temperature") and hasattr(provider, "humidity"):
-                temp_c = provider.temperature
-                humidity = provider.humidity
-                temp_f = (temp_c * 9 / 5) + 32
-                return f"{temp_f:.1f}F {humidity:.0f}%"
-
-            return "ERR"
+            temp_f = (data.temperature * 9 / 5) + 32
+            return f"{temp_f:.1f}F {data.humidity:.0f}% {data.pressure:.0f}hPa"
         except Exception:
             logger.exception("Failed reading environment data")
             return "ERR"
