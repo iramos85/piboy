@@ -2,6 +2,8 @@ import logging
 import shutil
 import socket
 import subprocess
+import threading
+import time
 from typing import Callable, Optional
 
 from injector import inject
@@ -23,6 +25,7 @@ class StatusApp(SelfUpdatingApp):
     __LINE_HEIGHT = 18
     __LEFT = 6
     __TOP = 6
+    __MAX_SCAN_RESULTS = 6
 
     @inject
     def __init__(
@@ -42,6 +45,23 @@ class StatusApp(SelfUpdatingApp):
         self.__environment_data_provider = environment_data_provider
         self.__location_provider = location_provider
 
+        self.__view_mode = "status"   # status | menu | scan
+        self.__menu_items = [
+            "REFRESH",
+            "SCAN WIFI",
+            "DISCONNECT WIFI",
+            "RECONNECT WIFI",
+            "BACK",
+        ]
+        self.__menu_index = 0
+
+        self.__scan_results: list[str] = []
+        self.__scan_selected_index = 0
+        self.__last_action_message = "READY"
+        self.__last_action_time = 0.0
+        self.__scan_lock = threading.Lock()
+        self.__scan_in_progress = False
+
     @property
     @override
     def title(self) -> str:
@@ -59,14 +79,40 @@ class StatusApp(SelfUpdatingApp):
                 command,
                 capture_output=True,
                 text=True,
-                timeout=2,
+                timeout=6,
             )
             if result.returncode == 0:
                 return result.stdout.strip()
+            stderr = (result.stderr or "").strip()
+            if stderr:
+                logger.debug("Command stderr for %s: %s", command, stderr)
             return ""
         except Exception as ex:
             logger.debug("Command failed %s: %s", command, ex)
             return ""
+
+    @staticmethod
+    def __run_command_rc(command: list[str]) -> tuple[int, str, str]:
+        try:
+            result = subprocess.run(
+                command,
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            return result.returncode, result.stdout.strip(), result.stderr.strip()
+        except Exception as ex:
+            return 999, "", str(ex)
+
+    def __set_action_message(self, message: str):
+        self.__last_action_message = message[:40]
+        self.__last_action_time = time.monotonic()
+        logger.info("StatusApp action: %s", self.__last_action_message)
+
+    def __get_action_message(self) -> str:
+        if time.monotonic() - self.__last_action_time <= 8:
+            return self.__last_action_message
+        return "READY"
 
     def __get_hostname(self) -> str:
         try:
@@ -208,7 +254,7 @@ class StatusApp(SelfUpdatingApp):
                 return "ERR"
 
             temp_f = (data.temperature * 9 / 5) + 32
-            return f"{temp_f:.1f}F {data.humidity:.0f}% {data.pressure:.0f}hPa"
+            return f"{temp_f:.1f}F {data.humidity:.0f}% {data.pressure:.0f}"
         except Exception:
             logger.exception("Failed reading environment data")
             return "ERR"
@@ -267,16 +313,160 @@ class StatusApp(SelfUpdatingApp):
         except Exception:
             return "STATUS ERR"
 
+    def __scan_wifi_worker(self):
+        with self.__scan_lock:
+            if self.__scan_in_progress:
+                return
+            self.__scan_in_progress = True
+
+        try:
+            self.__set_action_message("SCANNING WIFI...")
+            rc, out, err = self.__run_command_rc(
+                ["nmcli", "-t", "-f", "SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "yes"]
+            )
+
+            if rc != 0:
+                logger.warning("Wi-Fi scan failed: %s", err)
+                self.__scan_results = []
+                self.__view_mode = "scan"
+                self.__set_action_message("SCAN FAILED")
+                return
+
+            seen = set()
+            parsed: list[tuple[str, int]] = []
+
+            for line in out.splitlines():
+                if not line.strip():
+                    continue
+
+                parts = line.split(":")
+                if len(parts) < 2:
+                    continue
+
+                signal_text = parts[-1].strip()
+                ssid = ":".join(parts[:-1]).strip()
+
+                if not ssid:
+                    ssid = "<hidden>"
+
+                if ssid in seen:
+                    continue
+                seen.add(ssid)
+
+                try:
+                    signal = int(signal_text)
+                except Exception:
+                    signal = 0
+
+                parsed.append((ssid, signal))
+
+            parsed.sort(key=lambda x: x[1], reverse=True)
+            parsed = parsed[: self.__MAX_SCAN_RESULTS]
+
+            self.__scan_results = [f"{ssid[:16]:16} {signal:>3}%" for ssid, signal in parsed]
+            self.__scan_selected_index = 0
+            self.__view_mode = "scan"
+
+            if self.__scan_results:
+                self.__set_action_message(f"FOUND {len(self.__scan_results)} NETS")
+            else:
+                self.__set_action_message("NO NETWORKS FOUND")
+
+            try:
+                self._SelfUpdatingApp__update_callback(True)  # trigger redraw if available
+            except Exception:
+                pass
+
+        finally:
+            with self.__scan_lock:
+                self.__scan_in_progress = False
+
+    def __start_wifi_scan(self):
+        with self.__scan_lock:
+            if self.__scan_in_progress:
+                self.__set_action_message("SCAN ALREADY RUNNING")
+                return
+
+        threading.Thread(target=self.__scan_wifi_worker, daemon=True).start()
+
+    def __disconnect_wifi(self):
+        rc, _, err = self.__run_command_rc(["nmcli", "device", "disconnect", "wlan0"])
+        if rc == 0:
+            self.__set_action_message("WIFI DISCONNECTED")
+        else:
+            logger.warning("Disconnect failed: %s", err)
+            self.__set_action_message("DISCONNECT FAILED")
+
+    def __reconnect_wifi(self):
+        rc, _, err = self.__run_command_rc(["nmcli", "device", "connect", "wlan0"])
+        if rc == 0:
+            self.__set_action_message("WIFI RECONNECTED")
+        else:
+            logger.warning("Reconnect failed: %s", err)
+            self.__set_action_message("RECONNECT FAILED")
+
+    def __execute_selected_action(self):
+        item = self.__menu_items[self.__menu_index]
+
+        if item == "REFRESH":
+            self.__set_action_message("REFRESHED")
+        elif item == "SCAN WIFI":
+            self.__start_wifi_scan()
+        elif item == "DISCONNECT WIFI":
+            self.__disconnect_wifi()
+        elif item == "RECONNECT WIFI":
+            self.__reconnect_wifi()
+        elif item == "BACK":
+            self.__view_mode = "status"
+            self.__set_action_message("BACK TO STATUS")
+
+    @override
+    def on_app_enter(self):
+        super().on_app_enter()
+        self.__set_action_message("STATUS READY")
+
+    @override
+    def on_app_leave(self):
+        super().on_app_leave()
+        self.__view_mode = "status"
+
+    @override
+    def on_key_up(self):
+        if self.__view_mode == "menu":
+            self.__menu_index = (self.__menu_index - 1) % len(self.__menu_items)
+        elif self.__view_mode == "scan" and self.__scan_results:
+            self.__scan_selected_index = (self.__scan_selected_index - 1) % len(self.__scan_results)
+
+    @override
+    def on_key_down(self):
+        if self.__view_mode == "menu":
+            self.__menu_index = (self.__menu_index + 1) % len(self.__menu_items)
+        elif self.__view_mode == "scan" and self.__scan_results:
+            self.__scan_selected_index = (self.__scan_selected_index + 1) % len(self.__scan_results)
+
     @override
     def on_key_a(self):
-        logger.info("StatusApp refresh requested")
+        if self.__view_mode == "status":
+            self.__view_mode = "menu"
+            self.__set_action_message("MENU OPEN")
+        elif self.__view_mode == "menu":
+            self.__execute_selected_action()
+        elif self.__view_mode == "scan":
+            self.__set_action_message("VIEW ONLY")
 
     @override
     def on_key_b(self):
-        logger.info("StatusApp long-press action reserved")
+        if self.__view_mode == "status":
+            self.__view_mode = "menu"
+            self.__set_action_message("MENU OPEN")
+        elif self.__view_mode == "menu":
+            self.__view_mode = "status"
+            self.__set_action_message("BACK TO STATUS")
+        elif self.__view_mode == "scan":
+            self.__view_mode = "menu"
+            self.__set_action_message("BACK TO MENU")
 
-    @override
-    def draw(self, image: Image.Image, partial=False) -> tuple[Image.Image, int, int]:
+    def __draw_status_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
         draw = ImageDraw.Draw(image)
         font = self.__app_config.font_standard
         small_font = self.__app_config.font_header
@@ -300,6 +490,7 @@ class StatusApp(SelfUpdatingApp):
         env = self.__get_env_text()
         gps = self.__get_gps_text()
         warn = self.__get_warning_text()
+        action = self.__get_action_message()
 
         lines = [
             "STATUS",
@@ -318,11 +509,73 @@ class StatusApp(SelfUpdatingApp):
             f"GPS  {gps}",
             "",
             f"WARN {warn}",
+            f"MSG  {action}",
         ]
 
         for i, line in enumerate(lines):
             use_font = small_font if i == 0 else font
-            draw.text((x, y), line, self.__app_config.accent, font=use_font)
+            draw.text((x, y), line[:34], self.__app_config.accent, font=use_font)
             y += self.__LINE_HEIGHT if i != 0 else 22
 
         return image, 0, 0
+
+    def __draw_menu_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
+        draw = ImageDraw.Draw(image)
+        font = self.__app_config.font_standard
+        small_font = self.__app_config.font_header
+
+        x = self.__LEFT
+        y = self.__TOP
+
+        draw.text((x, y), "STATUS MENU", self.__app_config.accent, font=small_font)
+        y += 24
+
+        for idx, item in enumerate(self.__menu_items):
+            prefix = ">" if idx == self.__menu_index else " "
+            draw.text((x, y), f"{prefix} {item}", self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+
+        y += 6
+        draw.text((x, y), f"MSG {self.__get_action_message()}"[:34], self.__app_config.accent, font=font)
+        y += self.__LINE_HEIGHT
+        draw.text((x, y), "A=RUN  B=BACK", self.__app_config.accent, font=font)
+
+        return image, 0, 0
+
+    def __draw_scan_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
+        draw = ImageDraw.Draw(image)
+        font = self.__app_config.font_standard
+        small_font = self.__app_config.font_header
+
+        x = self.__LEFT
+        y = self.__TOP
+
+        draw.text((x, y), "WIFI SCAN", self.__app_config.accent, font=small_font)
+        y += 24
+
+        if self.__scan_in_progress:
+            draw.text((x, y), "SCANNING...", self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+        elif not self.__scan_results:
+            draw.text((x, y), "NO RESULTS", self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+        else:
+            for idx, item in enumerate(self.__scan_results):
+                prefix = ">" if idx == self.__scan_selected_index else " "
+                draw.text((x, y), f"{prefix} {item}"[:34], self.__app_config.accent, font=font)
+                y += self.__LINE_HEIGHT
+
+        y += 6
+        draw.text((x, y), f"MSG {self.__get_action_message()}"[:34], self.__app_config.accent, font=font)
+        y += self.__LINE_HEIGHT
+        draw.text((x, y), "B=MENU", self.__app_config.accent, font=font)
+
+        return image, 0, 0
+
+    @override
+    def draw(self, image: Image.Image, partial=False) -> tuple[Image.Image, int, int]:
+        if self.__view_mode == "menu":
+            return self.__draw_menu_view(image)
+        if self.__view_mode == "scan":
+            return self.__draw_scan_view(image)
+        return self.__draw_status_view(image)
