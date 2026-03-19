@@ -13,8 +13,8 @@ from PIL import Image, ImageDraw
 
 import environment
 from app.App import App
+from app.DashboardApp import DashboardApp
 from app.EnvironmentApp import EnvironmentApp
-from app.FileManagerApp import FileManagerApp
 from app.MapApp import MapApp
 from app.PowerApp import PowerApp
 from app.NullApp import NullApp
@@ -561,12 +561,12 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     GPIO.setwarnings(False)
 
     mode_pins = {
-        5: 0,    # INV
-        6: 1,    # SYS
+        5: 0,    # HOME
+        6: 1,    # UPDT
         12: 2,   # ENV
         13: 3,   # RAD
         20: 4,   # MAP
-        26: 5,   # CLK
+        26: 5,   # PWR
         23: 6,   # STAT
     }
 
@@ -826,7 +826,7 @@ if __name__ == "__main__":
 
     status_led = None
 
-    app_state.add_app(injector.get(FileManagerApp)) \
+    app_state.add_app(injector.get(DashboardApp)) \
         .add_app(injector.get(UpdateApp)) \
         .add_app(injector.get(EnvironmentApp)) \
         .add_app(injector.get(RadioApp)) \
