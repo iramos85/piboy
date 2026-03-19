@@ -160,11 +160,11 @@ class DashboardApp(App):
 
         # Header
         draw.line((8, 26, width - 8, 26), fill=accent, width=1)
-        draw.text((10, 6), "PIP-BOY // STATUS HUB", fill=accent, font=font_header)
+        draw.text((10, 8), "PIP-BOY // STATUS HUB", fill=accent, font=font_header)
 
         now_str = datetime.now(LOCAL_TZ).strftime("%I:%M:%S %p")
         now_w = self.__text_width(font_body, now_str)
-        draw.text((width - now_w - 10, 8), now_str, fill=accent, font=font_body)
+        draw.text((width - now_w - 10, 9), now_str, fill=accent, font=font_body)
 
         # Panel layout
         left_x0, left_y0, left_x1, left_y1 = 10, 34, 150, 176
@@ -210,7 +210,6 @@ class DashboardApp(App):
                 if ssid:
                     break
 
-        # Status message
         status_line = "ALL SYSTEMS NOMINAL"
         if env_status in (DeviceStatus.NO_DATA, DeviceStatus.UNAVAILABLE):
             status_line = "ENV SENSOR NOT READY"
@@ -240,7 +239,7 @@ class DashboardApp(App):
         signal_level = 0
         if connection_status == ConnectionStatus.CONNECTED:
             signal_level = 4
-        self.__draw_signal_bars(draw, 100, 110, accent, signal_level)
+        self.__draw_signal_bars(draw, 112, 110, accent, signal_level)
 
         self.__draw_text(draw, 16, 132, f"IP  {ip_addr if ip_addr else '--'}", accent)
         self.__draw_text(draw, 16, 150, f"AP  {ssid if ssid else '--'}", accent)
@@ -256,35 +255,29 @@ class DashboardApp(App):
         self.__draw_text(draw, 166, 78, f"LAT {lat:.5f}" if isinstance(lat, (int, float)) else "LAT --", accent)
         self.__draw_text(draw, 166, 96, f"LON {lon:.5f}" if isinstance(lon, (int, float)) else "LON --", accent)
 
-        self.__draw_label(draw, 166, 120, "ENV", accent)
+        self.__draw_label(draw, 166, 114, "ENV", accent)
 
         temp_norm = self.__norm_range(temp, 30, 100)
         hum_norm = self.__norm_range(humidity, 0, 100)
         prs_norm = self.__norm_range(pressure, 950, 1050)
 
-        self.__draw_text(draw, 166, 140, "TMP", accent)
-        self.__draw_meter(draw, 198, 140, 60, 10, temp_norm, accent, segments=6)
-        self.__draw_text(draw, 264, 138, f"{temp:.1f}" if isinstance(temp, (int, float)) else "--", accent)
+        self.__draw_text(draw, 166, 132, "TMP", accent)
+        self.__draw_meter(draw, 198, 132, 60, 10, temp_norm, accent, segments=6)
+        self.__draw_text(draw, 264, 130, f"{temp:.1f}" if isinstance(temp, (int, float)) else "--", accent)
 
-        self.__draw_text(draw, 166, 154, "HUM", accent)
-        self.__draw_meter(draw, 198, 154, 60, 10, hum_norm, accent, segments=6)
-        self.__draw_text(draw, 264, 152, f"{humidity:.0f}%" if isinstance(humidity, (int, float)) else "--", accent)
+        self.__draw_text(draw, 166, 146, "HUM", accent)
+        self.__draw_meter(draw, 198, 146, 60, 10, hum_norm, accent, segments=6)
+        self.__draw_text(draw, 264, 144, f"{humidity:.0f}%" if isinstance(humidity, (int, float)) else "--", accent)
 
-        self.__draw_text(draw, 166, 168, "PRS", accent)
-        self.__draw_meter(draw, 198, 168, 60, 10, prs_norm, accent, segments=6)
-        self.__draw_text(draw, 264, 166, f"{pressure:.0f}" if isinstance(pressure, (int, float)) else "--", accent)
+        self.__draw_text(draw, 166, 160, "PRS", accent)
+        self.__draw_meter(draw, 198, 160, 60, 10, prs_norm, accent, segments=6)
+        self.__draw_text(draw, 264, 158, f"{pressure:.0f}" if isinstance(pressure, (int, float)) else "--", accent)
 
         # Message strip
         self.__draw_label(draw, 16, 188, "CONSOLE", accent)
         self.__draw_text(draw, 16, 208, f"MSG  {status_line}", accent)
-
-        env_text = "--" if env_status is None else str(env_status).split(".")[-1]
-        self.__draw_text(draw, 16, 224, f"ENV  {env_text}", accent)
-
-        gps_status_text = "--" if gps_status is None else str(gps_status).split(".")[-1]
-        self.__draw_text(draw, 120, 224, f"GPS  {gps_status_text}", accent)
-
-        net_status_text = "--" if connection_status is None else str(connection_status).split(".")[-1]
-        self.__draw_text(draw, 220, 224, f"NET  {net_status_text}", accent)
+        self.__draw_text(draw, 16, 228, f"ENV  {('--' if env_status is None else str(env_status).split('.')[-1])}", accent)
+        self.__draw_text(draw, 112, 228, f"GPS  {('--' if gps_status is None else str(gps_status).split('.')[-1])}", accent)
+        self.__draw_text(draw, 220, 228, f"NET  {('--' if connection_status is None else str(connection_status).split('.')[-1])}", accent)
 
         return image, 0, 0
