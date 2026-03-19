@@ -45,10 +45,11 @@ class StatusApp(SelfUpdatingApp):
         self.__environment_data_provider = environment_data_provider
         self.__location_provider = location_provider
 
-        self.__view_mode = "status"   # status | menu | scan | detail
+        self.__view_mode = "status"   # status | menu | scan | detail | netinfo
         self.__menu_items = [
             "REFRESH",
             "SCAN WIFI",
+            "NET DETAILS",
             "DISCONNECT WIFI",
             "RECONNECT WIFI",
             "BACK",
@@ -58,9 +59,11 @@ class StatusApp(SelfUpdatingApp):
         self.__scan_results: list[dict] = []
         self.__scan_selected_index = 0
         self.__detail_menu_index = 0
+        self.__netinfo_menu_index = 0
 
         self.__last_action_message = "READY"
         self.__last_action_time = 0.0
+        self.__last_scan_time = "NEVER"
         self.__scan_lock = threading.Lock()
         self.__scan_in_progress = False
 
@@ -132,6 +135,14 @@ class StatusApp(SelfUpdatingApp):
             return ip
         except Exception:
             return "offline"
+
+    def __get_default_gateway(self) -> str:
+        out = self.__run_command(["sh", "-c", "ip route | awk '/default/ {print $3; exit}'"])
+        return out if out else "--"
+
+    def __get_interface_name(self) -> str:
+        out = self.__run_command(["sh", "-c", "iw dev 2>/dev/null | awk '$1==\"Interface\" {print $2; exit}'"])
+        return out if out else "wlan0"
 
     def __get_ssid(self) -> str:
         ssid = self.__run_command(["iwgetid", "-r"])
@@ -394,6 +405,7 @@ class StatusApp(SelfUpdatingApp):
             self.__scan_selected_index = 0
             self.__detail_menu_index = 0
             self.__view_mode = "scan"
+            self.__last_scan_time = time.strftime("%H:%M:%S")
 
             if self.__scan_results:
                 self.__set_action_message(f"FOUND {len(self.__scan_results)} NETS")
@@ -418,7 +430,8 @@ class StatusApp(SelfUpdatingApp):
         threading.Thread(target=self.__scan_wifi_worker, daemon=True).start()
 
     def __disconnect_wifi(self):
-        rc, _, err = self.__run_command_rc(["nmcli", "device", "disconnect", "wlan0"])
+        iface = self.__get_interface_name()
+        rc, _, err = self.__run_command_rc(["nmcli", "device", "disconnect", iface])
         if rc == 0:
             self.__set_action_message("WIFI DISCONNECTED")
         else:
@@ -426,7 +439,8 @@ class StatusApp(SelfUpdatingApp):
             self.__set_action_message("DISCONNECT FAILED")
 
     def __reconnect_wifi(self):
-        rc, _, err = self.__run_command_rc(["nmcli", "device", "connect", "wlan0"])
+        iface = self.__get_interface_name()
+        rc, _, err = self.__run_command_rc(["nmcli", "device", "connect", iface])
         if rc == 0:
             self.__set_action_message("WIFI RECONNECTED")
         else:
@@ -461,7 +475,7 @@ class StatusApp(SelfUpdatingApp):
         items = []
 
         if net["active"]:
-            items.append("CONNECTED")
+            items.append("DISCONNECT")
         elif net["saved"]:
             items.append("CONNECT")
         else:
@@ -470,6 +484,11 @@ class StatusApp(SelfUpdatingApp):
         items.append("BACK")
         return items
 
+    def __netinfo_menu_items(self) -> list[str]:
+        if self.__get_ssid() not in ("disconnected", "offline"):
+            return ["DISCONNECT", "BACK"]
+        return ["BACK"]
+
     def __execute_selected_action(self):
         item = self.__menu_items[self.__menu_index]
 
@@ -477,6 +496,10 @@ class StatusApp(SelfUpdatingApp):
             self.__set_action_message("REFRESHED")
         elif item == "SCAN WIFI":
             self.__start_wifi_scan()
+        elif item == "NET DETAILS":
+            self.__netinfo_menu_index = 0
+            self.__view_mode = "netinfo"
+            self.__set_action_message("NETWORK DETAILS")
         elif item == "DISCONNECT WIFI":
             self.__disconnect_wifi()
         elif item == "RECONNECT WIFI":
@@ -490,13 +513,22 @@ class StatusApp(SelfUpdatingApp):
 
         if item == "CONNECT":
             self.__connect_selected_network()
-        elif item == "CONNECTED":
-            self.__set_action_message("ALREADY CONNECTED")
+        elif item == "DISCONNECT":
+            self.__disconnect_wifi()
+            self.__set_action_message("DISCONNECTED ACTIVE NET")
         elif item == "UNSAVED":
             self.__set_action_message("PASSWORD ENTRY LATER")
         elif item == "BACK":
             self.__view_mode = "scan"
             self.__set_action_message("BACK TO SCAN")
+
+    def __execute_netinfo_action(self):
+        item = self.__netinfo_menu_items()[self.__netinfo_menu_index]
+        if item == "DISCONNECT":
+            self.__disconnect_wifi()
+        elif item == "BACK":
+            self.__view_mode = "menu"
+            self.__set_action_message("BACK TO MENU")
 
     @override
     def on_app_enter(self):
@@ -516,6 +548,8 @@ class StatusApp(SelfUpdatingApp):
             self.__scan_selected_index = (self.__scan_selected_index - 1) % len(self.__scan_results)
         elif self.__view_mode == "detail":
             self.__detail_menu_index = (self.__detail_menu_index - 1) % len(self.__detail_menu_items())
+        elif self.__view_mode == "netinfo":
+            self.__netinfo_menu_index = (self.__netinfo_menu_index - 1) % len(self.__netinfo_menu_items())
 
     @override
     def on_key_down(self):
@@ -525,6 +559,8 @@ class StatusApp(SelfUpdatingApp):
             self.__scan_selected_index = (self.__scan_selected_index + 1) % len(self.__scan_results)
         elif self.__view_mode == "detail":
             self.__detail_menu_index = (self.__detail_menu_index + 1) % len(self.__detail_menu_items())
+        elif self.__view_mode == "netinfo":
+            self.__netinfo_menu_index = (self.__netinfo_menu_index + 1) % len(self.__netinfo_menu_items())
 
     @override
     def on_key_a(self):
@@ -540,6 +576,8 @@ class StatusApp(SelfUpdatingApp):
                 self.__set_action_message("NET DETAILS")
         elif self.__view_mode == "detail":
             self.__execute_detail_action()
+        elif self.__view_mode == "netinfo":
+            self.__execute_netinfo_action()
 
     @override
     def on_key_b(self):
@@ -555,6 +593,9 @@ class StatusApp(SelfUpdatingApp):
         elif self.__view_mode == "detail":
             self.__view_mode = "scan"
             self.__set_action_message("BACK TO SCAN")
+        elif self.__view_mode == "netinfo":
+            self.__view_mode = "menu"
+            self.__set_action_message("BACK TO MENU")
 
     def __draw_status_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
         draw = ImageDraw.Draw(image)
@@ -644,6 +685,8 @@ class StatusApp(SelfUpdatingApp):
                 y += self.__LINE_HEIGHT
 
         y += 6
+        draw.text((x, y), f"SCAN {self.__last_scan_time}"[:34], self.__app_config.accent, font=font)
+        y += self.__LINE_HEIGHT
         draw.text((x, y), "*=LIVE S=SAVED", self.__app_config.accent, font=font)
         y += self.__LINE_HEIGHT
         draw.text((x, y), "A=DETAIL  B=MENU", self.__app_config.accent, font=font)
@@ -692,6 +735,41 @@ class StatusApp(SelfUpdatingApp):
 
         return image, 0, 0
 
+    def __draw_netinfo_view(self, image: Image.Image) -> tuple[Image.Image, int, int]:
+        draw = ImageDraw.Draw(image)
+        font = self.__app_config.font_standard
+        small_font = self.__app_config.font_header
+
+        x = self.__LEFT
+        y = self.__TOP
+
+        draw.text((x, y), "NET INFO", self.__app_config.accent, font=small_font)
+        y += 24
+
+        lines = [
+            f"SSID {self.__get_ssid()}",
+            f"IP   {self.__get_ip_address()}",
+            f"GW   {self.__get_default_gateway()}",
+            f"IF   {self.__get_interface_name()}",
+            f"SIG  {self.__get_wifi_signal_percent()}",
+            f"NET  {self.__get_connection_text()}",
+            "",
+        ]
+
+        for line in lines:
+            draw.text((x, y), line[:34], self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+
+        for idx, item in enumerate(self.__netinfo_menu_items()):
+            prefix = ">" if idx == self.__netinfo_menu_index else " "
+            draw.text((x, y), f"{prefix} {item}", self.__app_config.accent, font=font)
+            y += self.__LINE_HEIGHT
+
+        y += 4
+        draw.text((x, y), f"MSG {self.__get_action_message()}"[:34], self.__app_config.accent, font=font)
+
+        return image, 0, 0
+
     @override
     def draw(self, image: Image.Image, partial=False) -> tuple[Image.Image, int, int]:
         if self.__view_mode == "menu":
@@ -700,4 +778,6 @@ class StatusApp(SelfUpdatingApp):
             return self.__draw_scan_view(image)
         if self.__view_mode == "detail":
             return self.__draw_detail_view(image)
+        if self.__view_mode == "netinfo":
+            return self.__draw_netinfo_view(image)
         return self.__draw_status_view(image)
