@@ -47,26 +47,100 @@ class DashboardApp(App):
             logger.debug("DashboardApp safe call failed: %s", ex)
             return default
 
-    def __draw_section(
+    def __text_width(self, font, text: str) -> int:
+        bbox = font.getbbox(text)
+        return bbox[2] - bbox[0]
+
+    def __draw_box(self, draw: ImageDraw.ImageDraw, x0: int, y0: int, x1: int, y1: int, color):
+        draw.rectangle((x0, y0, x1, y1), outline=color, width=1)
+
+    def __draw_label(self, draw: ImageDraw.ImageDraw, x: int, y: int, text: str, color):
+        draw.text((x, y), text, fill=color, font=self.__app_config.font_header)
+
+    def __draw_text(self, draw: ImageDraw.ImageDraw, x: int, y: int, text: str, color):
+        draw.text((x, y), text, fill=color, font=self.__app_config.font_standard)
+
+    def __draw_meter(
         self,
         draw: ImageDraw.ImageDraw,
         x: int,
         y: int,
-        title: str,
-        lines: list[str],
-    ) -> int:
-        accent = self.__app_config.accent
-        font_header = self.__app_config.font_header
-        font_body = self.__app_config.font_standard
+        w: int,
+        h: int,
+        value: float | None,
+        color,
+        segments: int = 10,
+    ):
+        draw.rectangle((x, y, x + w, y + h), outline=color, width=1)
 
-        draw.text((x, y), title, fill=accent, font=font_header)
-        y += 18
+        if value is None:
+            return
 
-        for line in lines:
-            draw.text((x, y), line, fill=accent, font=font_body)
-            y += 16
+        value = max(0.0, min(1.0, float(value)))
+        filled = int(round(value * segments))
 
-        return y
+        inner_pad = 2
+        gap = 2
+        inner_w = w - inner_pad * 2
+        seg_w = max(1, (inner_w - (segments - 1) * gap) // segments)
+
+        sx = x + inner_pad
+        sy = y + inner_pad
+        sh = h - inner_pad * 2
+
+        for i in range(segments):
+            x0 = sx + i * (seg_w + gap)
+            x1 = x0 + seg_w
+            y0 = sy
+            y1 = sy + sh
+            if i < filled:
+                draw.rectangle((x0, y0, x1, y1), fill=color)
+
+    def __draw_signal_bars(
+        self,
+        draw: ImageDraw.ImageDraw,
+        x: int,
+        y: int,
+        color,
+        level: int,
+    ):
+        level = max(0, min(4, level))
+        bar_w = 5
+        gap = 3
+        heights = [5, 9, 13, 17]
+
+        for i, h in enumerate(heights):
+            x0 = x + i * (bar_w + gap)
+            y0 = y + (17 - h)
+            x1 = x0 + bar_w
+            y1 = y + 17
+            draw.rectangle((x0, y0, x1, y1), outline=color, width=1)
+            if i < level:
+                draw.rectangle((x0 + 1, y0 + 1, x1 - 1, y1 - 1), fill=color)
+
+    def __draw_crosshair(
+        self,
+        draw: ImageDraw.ImageDraw,
+        cx: int,
+        cy: int,
+        r: int,
+        color,
+        active: bool,
+    ):
+        draw.ellipse((cx - r, cy - r, cx + r, cy + r), outline=color, width=1)
+        draw.line((cx - r - 4, cy, cx + r + 4, cy), fill=color, width=1)
+        draw.line((cx, cy - r - 4, cx, cy + r + 4), fill=color, width=1)
+        if active:
+            draw.ellipse((cx - 3, cy - 3, cx + 3, cy + 3), fill=color)
+
+    def __norm_range(self, value, low, high):
+        try:
+            v = float(value)
+            if high <= low:
+                return None
+            return max(0.0, min(1.0, (v - low) / (high - low)))
+        except Exception:
+            return None
 
     @override
     def draw(self, image: Image.Image, partial=False) -> tuple[Image.Image, int, int]:
@@ -80,42 +154,45 @@ class DashboardApp(App):
 
         draw.rectangle((0, 0, width, height), fill=background)
 
-        # Frame lines
-        draw.rectangle((0, 0, width - 1, height - 1), outline=accent)
-        draw.line((width // 2, 8, width // 2, height - 28), fill=accent)
-        draw.line((8, height - 28, width - 8, height - 28), fill=accent)
+        # Outer frame
+        draw.rectangle((1, 1, width - 2, height - 2), outline=accent, width=1)
+        draw.rectangle((5, 5, width - 6, height - 6), outline=accent, width=1)
 
-        # Header strip
+        # Header
+        draw.line((8, 26, width - 8, 26), fill=accent, width=1)
+        draw.text((10, 6), "PIP-BOY // STATUS HUB", fill=accent, font=font_header)
+
         now_str = datetime.now(LOCAL_TZ).strftime("%I:%M:%S %p")
-        draw.text((10, 6), "PIP-BOY STATUS HUB", fill=accent, font=font_header)
+        now_w = self.__text_width(font_body, now_str)
+        draw.text((width - now_w - 10, 8), now_str, fill=accent, font=font_body)
 
-        time_bbox = font_body.getbbox(now_str)
-        time_width = time_bbox[2] - time_bbox[0]
-        draw.text((width - time_width - 10, 8), now_str, fill=accent, font=font_body)
+        # Panel layout
+        left_x0, left_y0, left_x1, left_y1 = 10, 34, 150, 176
+        right_x0, right_y0, right_x1, right_y1 = 160, 34, width - 10, 176
+        msg_x0, msg_y0, msg_x1, msg_y1 = 10, 182, width - 10, height - 10
 
-        # ---- System / Network ----
+        self.__draw_box(draw, left_x0, left_y0, left_x1, left_y1, accent)
+        self.__draw_box(draw, right_x0, right_y0, right_x1, right_y1, accent)
+        self.__draw_box(draw, msg_x0, msg_y0, msg_x1, msg_y1, accent)
+
+        # Provider data
         connection_status = self.__safe_call(self.__network_status_provider.get_connection_status)
         battery_soc = self.__safe_call(self.__battery_status_provider.get_state_of_charge)
         battery_device_status = self.__safe_call(self.__battery_status_provider.get_device_status)
 
-        sys_lines = []
+        gps_status = self.__safe_call(self.__location_provider.get_device_status)
+        location = self.__safe_call(self.__location_provider.get_location)
 
-        if battery_soc is None:
-            sys_lines.append("BAT: --")
-        else:
-            sys_lines.append(f"BAT: {battery_soc:.0%}")
+        env_status = self.__safe_call(self.__environment_data_provider.get_device_status)
+        env_data = self.__safe_call(self.__environment_data_provider.get_environment_data)
 
-        if battery_device_status is None:
-            sys_lines.append("PWR: --")
-        else:
-            sys_lines.append(f"PWR: {str(battery_device_status).split('.')[-1]}")
+        lat = getattr(location, "latitude", None) if location is not None else None
+        lon = getattr(location, "longitude", None) if location is not None else None
 
-        if connection_status is None:
-            sys_lines.append("NET: --")
-        else:
-            sys_lines.append(f"NET: {str(connection_status).split('.')[-1]}")
+        temp = getattr(env_data, "temperature", None) if env_data is not None else None
+        humidity = getattr(env_data, "humidity", None) if env_data is not None else None
+        pressure = getattr(env_data, "pressure", None) if env_data is not None else None
 
-        # best-effort network details
         ip_addr = None
         ssid = None
 
@@ -133,50 +210,8 @@ class DashboardApp(App):
                 if ssid:
                     break
 
-        sys_lines.append(f"IP : {ip_addr if ip_addr else '--'}")
-        sys_lines.append(f"AP : {ssid if ssid else '--'}")
-
-        # ---- GPS ----
-        gps_lines = []
-        gps_status = self.__safe_call(self.__location_provider.get_device_status)
-        location = self.__safe_call(self.__location_provider.get_location)
-
-        if gps_status is None:
-            gps_lines.append("STS: --")
-        else:
-            gps_lines.append(f"STS: {str(gps_status).split('.')[-1]}")
-
-        lat = None
-        lon = None
-
-        if location is not None:
-            lat = getattr(location, "latitude", None)
-            lon = getattr(location, "longitude", None)
-
-        gps_lines.append(f"LAT: {lat:.5f}" if isinstance(lat, (int, float)) else "LAT: --")
-        gps_lines.append(f"LON: {lon:.5f}" if isinstance(lon, (int, float)) else "LON: --")
-
-        # ---- Environment ----
-        env_lines = []
-        env_status = self.__safe_call(self.__environment_data_provider.get_device_status)
-        env_data = self.__safe_call(self.__environment_data_provider.get_environment_data)
-
-        if env_status is None:
-            env_lines.append("STS: --")
-        else:
-            env_lines.append(f"STS: {str(env_status).split('.')[-1]}")
-
-        temp = getattr(env_data, "temperature", None) if env_data is not None else None
-        humidity = getattr(env_data, "humidity", None) if env_data is not None else None
-        pressure = getattr(env_data, "pressure", None) if env_data is not None else None
-
-        env_lines.append(f"TMP: {temp:.1f}" if isinstance(temp, (int, float)) else "TMP: --")
-        env_lines.append(f"HUM: {humidity:.0f}%" if isinstance(humidity, (int, float)) else "HUM: --")
-        env_lines.append(f"PRS: {pressure:.0f}" if isinstance(pressure, (int, float)) else "PRS: --")
-
-        # ---- Console / summary line ----
+        # Status message
         status_line = "ALL SYSTEMS NOMINAL"
-
         if env_status in (DeviceStatus.NO_DATA, DeviceStatus.UNAVAILABLE):
             status_line = "ENV SENSOR NOT READY"
         elif gps_status in (DeviceStatus.NO_DATA, DeviceStatus.UNAVAILABLE):
@@ -186,11 +221,70 @@ class DashboardApp(App):
         elif battery_soc is not None and battery_soc <= 0.20:
             status_line = "LOW BATTERY WARNING"
 
-        # Draw sections
-        self.__draw_section(draw, 10, 28, "SYS", sys_lines)
-        self.__draw_section(draw, width // 2 + 10, 28, "GPS", gps_lines)
-        self.__draw_section(draw, 10, 142, "ENV", env_lines)
+        # Left panel: SYS / NET
+        self.__draw_label(draw, 16, 40, "SYS", accent)
 
-        draw.text((10, height - 22), f"MSG: {status_line}", fill=accent, font=font_body)
+        self.__draw_text(draw, 16, 60, "BAT", accent)
+        self.__draw_meter(draw, 44, 60, 90, 12, battery_soc, accent, segments=8)
+        bat_text = "--" if battery_soc is None else f"{battery_soc:.0%}"
+        draw.text((100, 76), bat_text, fill=accent, font=font_body)
+
+        self.__draw_text(draw, 16, 94, "PWR", accent)
+        pwr_text = "--" if battery_device_status is None else str(battery_device_status).split(".")[-1]
+        self.__draw_text(draw, 54, 94, pwr_text, accent)
+
+        self.__draw_text(draw, 16, 112, "NET", accent)
+        net_text = "--" if connection_status is None else str(connection_status).split(".")[-1]
+        self.__draw_text(draw, 54, 112, net_text, accent)
+
+        signal_level = 0
+        if connection_status == ConnectionStatus.CONNECTED:
+            signal_level = 4
+        self.__draw_signal_bars(draw, 100, 110, accent, signal_level)
+
+        self.__draw_text(draw, 16, 132, f"IP  {ip_addr if ip_addr else '--'}", accent)
+        self.__draw_text(draw, 16, 150, f"AP  {ssid if ssid else '--'}", accent)
+
+        # Right panel: GPS + ENV
+        self.__draw_label(draw, 166, 40, "GPS", accent)
+
+        gps_active = gps_status == DeviceStatus.OPERATIONAL and isinstance(lat, (int, float)) and isinstance(lon, (int, float))
+        self.__draw_crosshair(draw, right_x1 - 28, 58, 12, accent, gps_active)
+
+        gps_text = "--" if gps_status is None else str(gps_status).split(".")[-1]
+        self.__draw_text(draw, 166, 60, f"STS {gps_text}", accent)
+        self.__draw_text(draw, 166, 78, f"LAT {lat:.5f}" if isinstance(lat, (int, float)) else "LAT --", accent)
+        self.__draw_text(draw, 166, 96, f"LON {lon:.5f}" if isinstance(lon, (int, float)) else "LON --", accent)
+
+        self.__draw_label(draw, 166, 120, "ENV", accent)
+
+        temp_norm = self.__norm_range(temp, 30, 100)
+        hum_norm = self.__norm_range(humidity, 0, 100)
+        prs_norm = self.__norm_range(pressure, 950, 1050)
+
+        self.__draw_text(draw, 166, 140, "TMP", accent)
+        self.__draw_meter(draw, 198, 140, 60, 10, temp_norm, accent, segments=6)
+        self.__draw_text(draw, 264, 138, f"{temp:.1f}" if isinstance(temp, (int, float)) else "--", accent)
+
+        self.__draw_text(draw, 166, 154, "HUM", accent)
+        self.__draw_meter(draw, 198, 154, 60, 10, hum_norm, accent, segments=6)
+        self.__draw_text(draw, 264, 152, f"{humidity:.0f}%" if isinstance(humidity, (int, float)) else "--", accent)
+
+        self.__draw_text(draw, 166, 168, "PRS", accent)
+        self.__draw_meter(draw, 198, 168, 60, 10, prs_norm, accent, segments=6)
+        self.__draw_text(draw, 264, 166, f"{pressure:.0f}" if isinstance(pressure, (int, float)) else "--", accent)
+
+        # Message strip
+        self.__draw_label(draw, 16, 188, "CONSOLE", accent)
+        self.__draw_text(draw, 16, 208, f"MSG  {status_line}", accent)
+
+        env_text = "--" if env_status is None else str(env_status).split(".")[-1]
+        self.__draw_text(draw, 16, 224, f"ENV  {env_text}", accent)
+
+        gps_status_text = "--" if gps_status is None else str(gps_status).split(".")[-1]
+        self.__draw_text(draw, 120, 224, f"GPS  {gps_status_text}", accent)
+
+        net_status_text = "--" if connection_status is None else str(connection_status).split(".")[-1]
+        self.__draw_text(draw, 220, 224, f"NET  {net_status_text}", accent)
 
         return image, 0, 0
