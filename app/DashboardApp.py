@@ -189,7 +189,7 @@ class DashboardApp(App):
         # Draw sections
         self.__draw_section(draw, 10, 28, "SYS", sys_lines)
         self.__draw_section(draw, width // 2 + 10, 28, "GPS", gps_lines)
-        self.__draw_section(draw, 10, 118, "ENV", env_lines)
+        self.__draw_section(draw, 10, 142, "ENV", env_lines)
 
         draw.text((10, height - 22), f"MSG: {status_line}", fill=accent, font=font_body)
 
