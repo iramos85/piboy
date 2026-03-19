@@ -148,6 +148,12 @@ class StatusApp(SelfUpdatingApp):
         ssid = self.__run_command(["iwgetid", "-r"])
         return ssid if ssid else "disconnected"
 
+    def __get_active_connection_name(self) -> str:
+        out = self.__run_command(
+            ["sh", "-c", "nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2!=\"lo\" && $2!=\"\" {print $1; exit}'"]
+        )
+        return out if out else ""
+
     def __get_wifi_signal_percent(self) -> str:
         output = self.__run_command(["sh", "-c", "iwconfig 2>/dev/null"])
         if not output:
@@ -430,19 +436,43 @@ class StatusApp(SelfUpdatingApp):
         threading.Thread(target=self.__scan_wifi_worker, daemon=True).start()
 
     def __disconnect_wifi(self):
+        active_name = self.__get_active_connection_name()
         iface = self.__get_interface_name()
+
+        rc, _, err = 999, "", "No active connection"
+
+        if active_name:
+            rc, _, err = self.__run_command_rc(["nmcli", "connection", "down", active_name])
+            if rc == 0:
+                self.__set_action_message(f"DOWN {active_name[:24]}")
+                return
+
         rc, _, err = self.__run_command_rc(["nmcli", "device", "disconnect", iface])
         if rc == 0:
-            self.__set_action_message("WIFI DISCONNECTED")
+            self.__set_action_message(f"DOWN {iface}")
         else:
             logger.warning("Disconnect failed: %s", err)
             self.__set_action_message("DISCONNECT FAILED")
 
     def __reconnect_wifi(self):
         iface = self.__get_interface_name()
+        active_name = self.__get_active_connection_name()
+        current_ssid = self.__current_network()
+
+        self.__run_command_rc(["nmcli", "radio", "wifi", "on"])
+
+        target = active_name or (current_ssid if current_ssid not in ("disconnected", "offline") else "")
+
+        if target:
+            rc, _, err = self.__run_command_rc(["nmcli", "connection", "up", target])
+            if rc == 0:
+                self.__set_action_message(f"UP {target[:26]}")
+                return
+            logger.warning("Reconnect by connection failed for %s: %s", target, err)
+
         rc, _, err = self.__run_command_rc(["nmcli", "device", "connect", iface])
         if rc == 0:
-            self.__set_action_message("WIFI RECONNECTED")
+            self.__set_action_message(f"UP {iface}")
         else:
             logger.warning("Reconnect failed: %s", err)
             self.__set_action_message("RECONNECT FAILED")
@@ -459,6 +489,7 @@ class StatusApp(SelfUpdatingApp):
             self.__set_action_message("NOT A SAVED NETWORK")
             return
 
+        self.__run_command_rc(["nmcli", "radio", "wifi", "on"])
         rc, _, err = self.__run_command_rc(["nmcli", "connection", "up", ssid])
         if rc == 0:
             self.__set_action_message(f"CONNECTED {ssid[:18]}")
@@ -751,6 +782,7 @@ class StatusApp(SelfUpdatingApp):
             f"IP   {self.__get_ip_address()}",
             f"GW   {self.__get_default_gateway()}",
             f"IF   {self.__get_interface_name()}",
+            f"CONN {self.__get_active_connection_name() or '--'}",
             f"SIG  {self.__get_wifi_signal_percent()}",
             f"NET  {self.__get_connection_text()}",
             "",
