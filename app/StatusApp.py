@@ -109,6 +109,19 @@ class StatusApp(SelfUpdatingApp):
         except Exception as ex:
             return 999, "", str(ex)
 
+    @staticmethod
+    def __run_sudo_command_rc(command: list[str]) -> tuple[int, str, str]:
+        try:
+            result = subprocess.run(
+                ["sudo", *command],
+                capture_output=True,
+                text=True,
+                timeout=8,
+            )
+            return result.returncode, result.stdout.strip(), result.stderr.strip()
+        except Exception as ex:
+            return 999, "", str(ex)
+
     def __set_action_message(self, message: str):
         self.__last_action_message = message[:40]
         self.__last_action_time = time.monotonic()
@@ -442,12 +455,12 @@ class StatusApp(SelfUpdatingApp):
         rc, _, err = 999, "", "No active connection"
 
         if active_name:
-            rc, _, err = self.__run_command_rc(["nmcli", "connection", "down", active_name])
+            rc, _, err = self.__run_sudo_command_rc(["nmcli", "connection", "down", active_name])
             if rc == 0:
                 self.__set_action_message(f"DOWN {active_name[:24]}")
                 return
 
-        rc, _, err = self.__run_command_rc(["nmcli", "device", "disconnect", iface])
+        rc, _, err = self.__run_sudo_command_rc(["nmcli", "device", "disconnect", iface])
         if rc == 0:
             self.__set_action_message(f"DOWN {iface}")
         else:
@@ -459,18 +472,18 @@ class StatusApp(SelfUpdatingApp):
         active_name = self.__get_active_connection_name()
         current_ssid = self.__current_network()
 
-        self.__run_command_rc(["nmcli", "radio", "wifi", "on"])
+        self.__run_sudo_command_rc(["nmcli", "radio", "wifi", "on"])
 
         target = active_name or (current_ssid if current_ssid not in ("disconnected", "offline") else "")
 
         if target:
-            rc, _, err = self.__run_command_rc(["nmcli", "connection", "up", target])
+            rc, _, err = self.__run_sudo_command_rc(["nmcli", "connection", "up", target])
             if rc == 0:
                 self.__set_action_message(f"UP {target[:26]}")
                 return
             logger.warning("Reconnect by connection failed for %s: %s", target, err)
 
-        rc, _, err = self.__run_command_rc(["nmcli", "device", "connect", iface])
+        rc, _, err = self.__run_sudo_command_rc(["nmcli", "device", "connect", iface])
         if rc == 0:
             self.__set_action_message(f"UP {iface}")
         else:
@@ -489,8 +502,8 @@ class StatusApp(SelfUpdatingApp):
             self.__set_action_message("NOT A SAVED NETWORK")
             return
 
-        self.__run_command_rc(["nmcli", "radio", "wifi", "on"])
-        rc, _, err = self.__run_command_rc(["nmcli", "connection", "up", ssid])
+        self.__run_sudo_command_rc(["nmcli", "radio", "wifi", "on"])
+        rc, _, err = self.__run_sudo_command_rc(["nmcli", "connection", "up", ssid])
         if rc == 0:
             self.__set_action_message(f"CONNECTED {ssid[:18]}")
             self.__view_mode = "scan"
