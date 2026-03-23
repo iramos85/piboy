@@ -14,19 +14,20 @@ from PIL import Image, ImageDraw
 import environment
 from app.App import App
 from app.DashboardApp import DashboardApp
-from app.EnvironmentApp import EnvironmentApp
 from app.MapApp import MapApp
 from app.PowerApp import PowerApp
 from app.NullApp import NullApp
 from app.RadioApp import RadioApp
 from app.StatusApp import StatusApp
 from app.UpdateApp import UpdateApp
+from app.notificationapp import NotificationApp
 from core import resources
 from core.data import ConnectionStatus, DeviceStatus
 from data.BatteryStatusProvider import BatteryStatusProvider
 from data.EnvironmentDataProvider import EnvironmentDataProvider
 from data.LocationProvider import LocationProvider
 from data.NetworkStatusProvider import NetworkStatusProvider
+from data.NotificationManager import NotificationManager
 from data.OSMTileProvider import OSMTileProvider
 from data.TileProvider import TileProvider
 from environment import AppConfig, Environment
@@ -90,6 +91,7 @@ class AppState:
         self.__location_provider = location_provider
         self.__battery_status_provider = battery_status_provider
         self.__environment_data_provider = environment_data_provider
+        self.__notification_manager = NotificationManager(max_entries=100)
         self.__image_buffer = self.__init_buffer()
         self.__apps: list[App] = []
         self.__active_app = 0
@@ -97,6 +99,10 @@ class AppState:
         self.__display_lock = threading.Lock()
         self.__state_lock = threading.RLock()
         self.__switching_app = False
+
+        self.__notification_manager.push("SYS", "INFO", "Boot sequence started")
+        self.__notification_manager.push("SYS", "INFO", "PiBoy services initialized")
+        self.__notification_manager.push("SYS", "INFO", "UI ready")
 
     def __init_buffer(self) -> Image.Image:
         return Image.new("RGB", self.__environment.app_config.resolution, self.__environment.app_config.background)
@@ -139,6 +145,10 @@ class AppState:
     @property
     def environment_data_provider(self) -> EnvironmentDataProvider:
         return self.__environment_data_provider
+
+    @property
+    def notification_manager(self) -> NotificationManager:
+        return self.__notification_manager
 
     @property
     def image_buffer(self) -> Image.Image:
@@ -202,6 +212,10 @@ class AppState:
 
                 logger.info("Entering app: %s", self.active_app.title)
                 self.active_app.on_app_enter()
+
+                if isinstance(self.active_app, NotificationApp):
+                    self.notification_manager.mark_all_read()
+
                 play_tab_switch_sfx()
                 logger.info("Updating display for app: %s", self.active_app.title)
                 self.update_display(display, partial=False, allow_during_switch=True)
@@ -364,6 +378,10 @@ class AppState:
                 logger.info("Rotary increase: %s -> %s", previous_title, self.active_app.title)
 
                 self.active_app.on_app_enter()
+
+                if isinstance(self.active_app, NotificationApp):
+                    self.notification_manager.mark_all_read()
+
                 play_tab_switch_sfx()
                 self.update_display(display, partial=False, allow_during_switch=True)
                 logger.info("Rotary increase complete: now on %s", self.active_app.title)
@@ -398,6 +416,10 @@ class AppState:
                 logger.info("Rotary decrease: %s -> %s", previous_title, self.active_app.title)
 
                 self.active_app.on_app_enter()
+
+                if isinstance(self.active_app, NotificationApp):
+                    self.notification_manager.mark_all_read()
+
                 play_tab_switch_sfx()
                 self.update_display(display, partial=False, allow_during_switch=True)
                 logger.info("Rotary decrease complete: now on %s", self.active_app.title)
@@ -572,7 +594,7 @@ def start_mode_selector_thread(app_state: AppState, display: Display):
     mode_pins = {
         5: 0,    # HOME
         6: 1,    # UPDT
-        12: 2,   # ENV
+        12: 2,   # NOTIF
         13: 3,   # RAD
         20: 4,   # MAP
         26: 5,   # PWR
@@ -837,7 +859,7 @@ if __name__ == "__main__":
 
     app_state.add_app(injector.get(DashboardApp)) \
         .add_app(injector.get(UpdateApp)) \
-        .add_app(injector.get(EnvironmentApp)) \
+        .add_app(NotificationApp(app_state.notification_manager)) \
         .add_app(injector.get(RadioApp)) \
         .add_app(injector.get(MapApp)) \
         .add_app(injector.get(PowerApp)) \
@@ -859,6 +881,9 @@ if __name__ == "__main__":
     DISPLAY.show(app_state.image_buffer, 0, 0)
     app_state.update_display(DISPLAY)
     app_state.active_app.on_app_enter()
+
+    if isinstance(app_state.active_app, NotificationApp):
+        app_state.notification_manager.mark_all_read()
 
     if status_led is not None:
         try:
