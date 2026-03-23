@@ -19,7 +19,7 @@ from environment import AppConfig
 
 logger = logging.getLogger("app")
 
-BUILD_LABEL = "BUILD V2.3"
+BUILD_LABEL = "BUILD V2.4"
 GEOCODE_TTL_S = 300
 GEOCODE_MIN_MOVE_DEG = 0.002
 
@@ -273,7 +273,7 @@ class DashboardApp(App):
             req = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "PiBoyDashboard/2.3 (local project use)",
+                    "User-Agent": "PiBoyDashboard/2.4 (local project use)",
                     "Accept": "application/json",
                 },
             )
@@ -353,11 +353,8 @@ class DashboardApp(App):
 
         connection_status = self.__safe_call(self.__network_status_provider.get_connection_status)
         battery_soc = self.__safe_call(self.__battery_status_provider.get_state_of_charge)
-        battery_device_status = self.__safe_call(self.__battery_status_provider.get_device_status)
-
         gps_status = self.__safe_call(self.__location_provider.get_device_status)
         location = self.__safe_call(self.__location_provider.get_location)
-
         env_status = self.__safe_call(self.__environment_data_provider.get_device_status)
         env_data = self.__safe_call(self.__environment_data_provider.get_environment_data)
 
@@ -395,6 +392,7 @@ class DashboardApp(App):
             env_status=env_status,
         )
 
+        # LEFT PANEL
         self.__draw_label(draw, 16, 40, "SYS", accent)
 
         self.__draw_text(draw, 16, 60, "BAT", accent)
@@ -402,20 +400,17 @@ class DashboardApp(App):
         bat_text = "--" if battery_soc is None else f"{battery_soc:.0%}"
         draw.text((106, 76), bat_text, fill=accent, font=font_body)
 
-        self.__draw_text(draw, 16, 94, "PWR", accent)
-        pwr_text = "--" if battery_device_status is None else str(battery_device_status).split(".")[-1]
-        self.__draw_text(draw, 54, 94, pwr_text, accent)
-
-        self.__draw_text(draw, 16, 112, "NET", accent)
+        self.__draw_text(draw, 16, 102, "NET", accent)
         net_text = "--" if connection_status is None else str(connection_status).split(".")[-1]
-        self.__draw_text(draw, 54, 112, net_text, accent)
+        self.__draw_text(draw, 54, 102, net_text, accent)
 
         signal_level = 4 if connection_status == ConnectionStatus.CONNECTED else 0
-        self.__draw_signal_bars(draw, 126, 110, accent, signal_level)
+        self.__draw_signal_bars(draw, 136, 100, accent, signal_level)
 
-        self.__draw_text(draw, 16, 132, f"IP  {ip_addr if ip_addr else '--'}", accent)
-        self.__draw_text(draw, 16, 150, f"AP  {ssid if ssid else '--'}", accent)
+        self.__draw_text(draw, 16, 126, f"IP  {ip_addr if ip_addr else '--'}", accent)
+        self.__draw_text(draw, 16, 146, f"AP  {ssid if ssid else '--'}", accent)
 
+        # RIGHT PANEL
         self.__draw_label(draw, 178, 40, "GPS", accent)
 
         gps_active = (
