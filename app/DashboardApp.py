@@ -1,4 +1,9 @@
+import json
 import logging
+import threading
+import time
+import urllib.parse
+import urllib.request
 
 from injector import inject
 from PIL import Image, ImageDraw
@@ -14,7 +19,9 @@ from environment import AppConfig
 
 logger = logging.getLogger("app")
 
-BUILD_LABEL = "BUILD V2.2"
+BUILD_LABEL = "BUILD V2.3"
+GEOCODE_TTL_S = 300
+GEOCODE_MIN_MOVE_DEG = 0.002
 
 
 class DashboardApp(App):
@@ -35,6 +42,12 @@ class DashboardApp(App):
 
         self.__ticker_offset = 0
         self.__ticker_text = "BOOTING STATUS HUB"
+
+        self.__geo_lock = threading.Lock()
+        self.__geo_lookup_in_progress = False
+        self.__geo_last_lookup_ts = 0.0
+        self.__geo_last_coords: tuple[float, float] | None = None
+        self.__geo_place_label: str | None = None
 
     @property
     @override
@@ -196,6 +209,120 @@ class DashboardApp(App):
 
         self.__draw_text(draw, x0 + 6, text_y, visible_text, color)
 
+    def __needs_geocode_refresh(self, lat: float, lon: float) -> bool:
+        with self.__geo_lock:
+            now = time.time()
+
+            if self.__geo_lookup_in_progress:
+                return False
+
+            if self.__geo_last_coords is None:
+                return True
+
+            last_lat, last_lon = self.__geo_last_coords
+            moved = abs(lat - last_lat) > GEOCODE_MIN_MOVE_DEG or abs(lon - last_lon) > GEOCODE_MIN_MOVE_DEG
+            expired = (now - self.__geo_last_lookup_ts) > GEOCODE_TTL_S
+
+            return moved or expired
+
+    def __format_place_label(self, payload: dict) -> str | None:
+        address = payload.get("address", {})
+
+        suburb = (
+            address.get("suburb")
+            or address.get("neighbourhood")
+            or address.get("quarter")
+            or address.get("city_district")
+        )
+        city = (
+            address.get("city")
+            or address.get("town")
+            or address.get("village")
+            or address.get("municipality")
+            or address.get("county")
+        )
+        state = address.get("state")
+
+        if suburb and city and state:
+            return f"{suburb}, {city}, {state}"
+        if city and state:
+            return f"{city}, {state}"
+        if suburb and state:
+            return f"{suburb}, {state}"
+        if state:
+            return state
+
+        display_name = payload.get("display_name")
+        if isinstance(display_name, str) and display_name.strip():
+            return display_name.split(",")[0].strip()
+
+        return None
+
+    def __reverse_geocode_worker(self, lat: float, lon: float):
+        try:
+            query = urllib.parse.urlencode(
+                {
+                    "lat": f"{lat:.6f}",
+                    "lon": f"{lon:.6f}",
+                    "format": "jsonv2",
+                    "zoom": "12",
+                    "addressdetails": "1",
+                }
+            )
+            url = f"https://nominatim.openstreetmap.org/reverse?{query}"
+            req = urllib.request.Request(
+                url,
+                headers={
+                    "User-Agent": "PiBoyDashboard/2.3 (local project use)",
+                    "Accept": "application/json",
+                },
+            )
+
+            with urllib.request.urlopen(req, timeout=3.0) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+
+            place_label = self.__format_place_label(payload)
+            if place_label:
+                place_label = place_label.upper()
+
+            with self.__geo_lock:
+                self.__geo_last_coords = (lat, lon)
+                self.__geo_last_lookup_ts = time.time()
+                self.__geo_place_label = place_label
+        except Exception as ex:
+            logger.debug("Reverse geocode failed: %s", ex)
+            with self.__geo_lock:
+                self.__geo_last_coords = (lat, lon)
+                self.__geo_last_lookup_ts = time.time()
+        finally:
+            with self.__geo_lock:
+                self.__geo_lookup_in_progress = False
+
+    def __request_geocode_if_needed(self, connection_status, lat, lon):
+        if connection_status != ConnectionStatus.CONNECTED:
+            return
+
+        if not isinstance(lat, (int, float)) or not isinstance(lon, (int, float)):
+            return
+
+        if not self.__needs_geocode_refresh(lat, lon):
+            return
+
+        with self.__geo_lock:
+            if self.__geo_lookup_in_progress:
+                return
+            self.__geo_lookup_in_progress = True
+
+        threading.Thread(
+            target=self.__reverse_geocode_worker,
+            args=(float(lat), float(lon)),
+            daemon=True,
+        ).start()
+
+    def __get_cached_place_label(self) -> str | None:
+        with self.__geo_lock:
+            return self.__geo_place_label
+
     @override
     def draw(self, image: Image.Image, partial=False) -> tuple[Image.Image, int, int]:
         draw = ImageDraw.Draw(image)
@@ -258,6 +385,9 @@ class DashboardApp(App):
                 if ssid:
                     break
 
+        self.__request_geocode_if_needed(connection_status, lat, lon)
+        place_label = self.__get_cached_place_label()
+
         self.__ticker_text = self.__build_status_line(
             connection_status=connection_status,
             battery_soc=battery_soc,
@@ -295,10 +425,18 @@ class DashboardApp(App):
         )
         self.__draw_crosshair(draw, right_x1 - 28, 58, 12, accent, gps_active)
 
-        gps_text = "--" if gps_status is None else str(gps_status).split(".")[-1]
-        self.__draw_text(draw, 178, 60, f"STS {gps_text}", accent)
-        self.__draw_text(draw, 178, 78, f"LAT {lat:.5f}" if isinstance(lat, (int, float)) else "LAT --", accent)
-        self.__draw_text(draw, 178, 96, f"LON {lon:.5f}" if isinstance(lon, (int, float)) else "LON --", accent)
+        if place_label and gps_active:
+            self.__draw_text(draw, 178, 62, place_label[:20], accent)
+            if len(place_label) > 20:
+                self.__draw_text(draw, 178, 80, place_label[20:40], accent)
+            else:
+                self.__draw_text(draw, 178, 80, "LOCATION LOCK", accent)
+            self.__draw_text(draw, 178, 98, "COORDS CACHED", accent)
+        else:
+            gps_text = "--" if gps_status is None else str(gps_status).split(".")[-1]
+            self.__draw_text(draw, 178, 60, f"STS {gps_text}", accent)
+            self.__draw_text(draw, 178, 78, f"LAT {lat:.5f}" if isinstance(lat, (int, float)) else "LAT --", accent)
+            self.__draw_text(draw, 178, 96, f"LON {lon:.5f}" if isinstance(lon, (int, float)) else "LON --", accent)
 
         self.__draw_label(draw, 178, 114, "ENV", accent)
 
