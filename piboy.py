@@ -262,8 +262,17 @@ class AppState:
                 self.__tick()
                 continue
 
-            image, x0, y0 = draw_footer(self.image_buffer, self)
-            self._show_display(display, image, x0, y0)
+            if getattr(self.active_app, "title", "") == "HOME":
+                try:
+                    if hasattr(self.active_app, "tick"):
+                        self.active_app.tick()
+                    self.update_display(display, partial=False)
+                except Exception:
+                    logger.exception("Failed to refresh HOME dashboard")
+            else:
+                image, x0, y0 = draw_footer(self.image_buffer, self)
+                self._show_display(display, image, x0, y0)
+
             self.__tick()
 
     def update_display(self, display: Display, partial=False, allow_during_switch=False):

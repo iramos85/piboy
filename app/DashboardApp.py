@@ -35,7 +35,6 @@ class DashboardApp(App):
 
         self.__ticker_offset = 0
         self.__ticker_text = "BOOTING STATUS HUB"
-        self.__last_status_line = ""
 
     @property
     @override
@@ -180,8 +179,7 @@ class DashboardApp(App):
 
     def __draw_ticker(self, draw: ImageDraw.ImageDraw, x0: int, y0: int, x1: int, y1: int, color):
         font = self.__app_config.font_standard
-        label = "CONSOLE"
-        self.__draw_label(draw, x0 + 6, y0 + 4, label, color)
+        self.__draw_label(draw, x0 + 6, y0 + 4, "CONSOLE", color)
 
         text_y = y0 + 24
         available_width = (x1 - x0) - 12
@@ -205,7 +203,6 @@ class DashboardApp(App):
         width, height = image.size
         accent = self.__app_config.accent
         background = self.__app_config.background
-        font_header = self.__app_config.font_header
         font_body = self.__app_config.font_standard
 
         draw.rectangle((0, 0, width, height), fill=background)
@@ -214,12 +211,11 @@ class DashboardApp(App):
         draw.rectangle((5, 5, width - 6, height - 6), outline=accent, width=1)
 
         draw.line((8, 26, width - 8, 26), fill=accent, width=1)
-        draw.text((10, 8), "PIP-BOY // STATUS HUB", fill=accent, font=font_header)
+        draw.text((10, 8), "PIP-BOY // STATUS HUB", fill=accent, font=self.__app_config.font_header)
 
         build_w = self.__text_width(font_body, BUILD_LABEL)
         draw.text((width - build_w - 10, 9), BUILD_LABEL, fill=accent, font=font_body)
 
-        # Wider left panel
         left_x0, left_y0, left_x1, left_y1 = 10, 34, 162, 176
         right_x0, right_y0, right_x1, right_y1 = 172, 34, width - 10, 176
         msg_x0, msg_y0, msg_x1, msg_y1 = 10, 182, width - 10, height - 10
