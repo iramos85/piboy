@@ -19,7 +19,7 @@ from environment import AppConfig
 
 logger = logging.getLogger("app")
 
-BUILD_LABEL = "BUILD V2.4"
+BUILD_LABEL = "BUILD V2.5"
 GEOCODE_TTL_S = 300
 GEOCODE_MIN_MOVE_DEG = 0.002
 
@@ -273,7 +273,7 @@ class DashboardApp(App):
             req = urllib.request.Request(
                 url,
                 headers={
-                    "User-Agent": "PiBoyDashboard/2.4 (local project use)",
+                    "User-Agent": "PiBoyDashboard/2.5 (local project use)",
                     "Accept": "application/json",
                 },
             )
@@ -365,22 +365,8 @@ class DashboardApp(App):
         humidity = getattr(env_data, "humidity", None) if env_data is not None else None
         pressure = getattr(env_data, "pressure", None) if env_data is not None else None
 
-        ip_addr = None
-        ssid = None
-
-        for attr_name in ("get_ip_address", "get_ip", "ip_address"):
-            attr = getattr(self.__network_status_provider, attr_name, None)
-            if callable(attr):
-                ip_addr = self.__safe_call(attr)
-                if ip_addr:
-                    break
-
-        for attr_name in ("get_ssid", "get_wifi_name", "ssid"):
-            attr = getattr(self.__network_status_provider, attr_name, None)
-            if callable(attr):
-                ssid = self.__safe_call(attr)
-                if ssid:
-                    break
+        ip_addr = self.__safe_call(getattr(self.__network_status_provider, "get_ip_address", None), default=None)
+        ssid = self.__safe_call(getattr(self.__network_status_provider, "get_ssid", None), default=None)
 
         self.__request_geocode_if_needed(connection_status, lat, lon)
         place_label = self.__get_cached_place_label()
@@ -401,11 +387,8 @@ class DashboardApp(App):
         draw.text((106, 76), bat_text, fill=accent, font=font_body)
 
         self.__draw_text(draw, 16, 102, "NET", accent)
-        net_text = "--" if connection_status is None else str(connection_status).split(".")[-1]
-        self.__draw_text(draw, 54, 102, net_text, accent)
-
         signal_level = 4 if connection_status == ConnectionStatus.CONNECTED else 0
-        self.__draw_signal_bars(draw, 136, 100, accent, signal_level)
+        self.__draw_signal_bars(draw, 120, 100, accent, signal_level)
 
         self.__draw_text(draw, 16, 126, f"IP  {ip_addr if ip_addr else '--'}", accent)
         self.__draw_text(draw, 16, 146, f"AP  {ssid if ssid else '--'}", accent)
