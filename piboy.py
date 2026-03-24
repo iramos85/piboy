@@ -20,7 +20,7 @@ from app.NullApp import NullApp
 from app.RadioApp import RadioApp
 from app.StatusApp import StatusApp
 from app.UpdateApp import UpdateApp
-from app.notificationapp import NotificationApp
+from app.NotificationApp import NotificationApp
 from core import resources
 from core.data import ConnectionStatus, DeviceStatus
 from data.BatteryStatusProvider import BatteryStatusProvider
