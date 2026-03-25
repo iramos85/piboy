@@ -44,6 +44,7 @@ TAB_SWITCH_SFX = "media/ui/tab_switch.wav"
 
 STATUS_LED_PIN = 16
 LOW_BATTERY_THRESHOLD = 0.20
+CRITICAL_BATTERY_THRESHOLD = 0.10
 
 ENC_A_PIN = 17
 ENC_B_PIN = 27
@@ -100,6 +101,11 @@ class AppState:
         self.__state_lock = threading.RLock()
         self.__switching_app = False
 
+        self._last_network_status = None
+        self._last_gps_status = None
+        self._last_env_status = None
+        self._last_battery_band = None
+
         self.__notification_manager.push("SYS", "INFO", "Boot sequence started")
         self.__notification_manager.push("SYS", "INFO", "PiBoy services initialized")
         self.__notification_manager.push("SYS", "INFO", "UI ready")
@@ -117,6 +123,84 @@ class AppState:
     def _show_display(self, display: Display, image: Image.Image, x: int, y: int):
         with self.__display_lock:
             display.show(image, x, y)
+
+    def _push_notification(self, category: str, severity: str, message: str):
+        try:
+            self.__notification_manager.push(category, severity, message)
+        except Exception:
+            logger.exception("Failed to push notification: %s %s %s", category, severity, message)
+
+    def _poll_and_notify_status_changes(self):
+        # Network
+        try:
+            network_status = self.network_status_provider.get_connection_status()
+            if self._last_network_status is None:
+                self._last_network_status = network_status
+            elif network_status != self._last_network_status:
+                if network_status == ConnectionStatus.CONNECTED:
+                    self._push_notification("NET", "INFO", "Wi-Fi connected")
+                else:
+                    self._push_notification("NET", "WARN", "Wi-Fi disconnected")
+                self._last_network_status = network_status
+        except Exception:
+            logger.exception("Failed polling network status for notifications")
+
+        # GPS
+        try:
+            gps_status = self.location_provider.get_device_status()
+            if self._last_gps_status is None:
+                self._last_gps_status = gps_status
+            elif gps_status != self._last_gps_status:
+                if gps_status == DeviceStatus.OPERATIONAL:
+                    self._push_notification("GPS", "INFO", "GPS fix available")
+                elif gps_status == DeviceStatus.NO_DATA:
+                    self._push_notification("GPS", "WARN", "GPS no data")
+                else:
+                    self._push_notification("GPS", "ERROR", "GPS unavailable")
+                self._last_gps_status = gps_status
+        except Exception:
+            logger.exception("Failed polling GPS status for notifications")
+
+        # Environment sensor
+        try:
+            env_status = self.environment_data_provider.get_device_status()
+            if self._last_env_status is None:
+                self._last_env_status = env_status
+            elif env_status != self._last_env_status:
+                if env_status == DeviceStatus.OPERATIONAL:
+                    self._push_notification("ENV", "INFO", "Environment sensor online")
+                elif env_status == DeviceStatus.NO_DATA:
+                    self._push_notification("ENV", "WARN", "Environment sensor no data")
+                else:
+                    self._push_notification("ENV", "ERROR", "Environment sensor unavailable")
+                self._last_env_status = env_status
+        except Exception:
+            logger.exception("Failed polling environment status for notifications")
+
+        # Battery thresholds
+        try:
+            battery_soc = self.battery_status_provider.get_state_of_charge()
+
+            if battery_soc <= CRITICAL_BATTERY_THRESHOLD:
+                new_band = "critical"
+            elif battery_soc <= LOW_BATTERY_THRESHOLD:
+                new_band = "low"
+            else:
+                new_band = "normal"
+
+            if self._last_battery_band is None:
+                self._last_battery_band = new_band
+            elif new_band != self._last_battery_band:
+                if new_band == "critical":
+                    self._push_notification("PWR", "ERROR", f"Battery critical: {battery_soc:.0%}")
+                elif new_band == "low":
+                    self._push_notification("PWR", "WARN", f"Battery low: {battery_soc:.0%}")
+                else:
+                    self._push_notification("PWR", "INFO", f"Battery normal: {battery_soc:.0%}")
+
+                self._last_battery_band = new_band
+        except Exception:
+            logger.exception("Failed polling battery status for notifications")
 
     def add_app(self, app: App) -> Self:
         self.__apps.append(app)
@@ -271,6 +355,11 @@ class AppState:
                     status_led.set_mode(self.get_status_led_mode())
                 except Exception:
                     logger.exception("Failed updating status LED mode")
+
+            try:
+                self._poll_and_notify_status_changes()
+            except Exception:
+                logger.exception("Failed while polling notification status changes")
 
             if self.__switching_app:
                 self.__tick()
